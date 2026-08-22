@@ -1118,3 +1118,54 @@ tags, not just file presence), sidebar mark renders correctly in both themes, na
 holds with the letter badges gone, and — after a hard refresh — all settings (theme, sidebar
 width/collapsed, font size) cleanly reset to defaults under the new key names with no leftover stale
 values or console errors.
+
+### 7.26 Pinned GitHub Repos — Release Tracking Without a GitHub "Watch" (2026-08-22)
+
+§7.20's GitHub Watch Feed block only ever showed repos the user had clicked "Watch" on in GitHub —
+which also subscribes them to every PR/issue email for that repo. Michael isn't a contributor to any of
+the repos he wanted release visibility for (Ollama, an MLX fork, a Microsoft Foundry repo), so watching
+them just for release notes meant unwanted notification noise. This adds a second, independent way to
+track a repo's releases — pinning it by `owner/repo` slug directly, with no GitHub-side state change and
+no emails. Full backend design (schema, endpoint contracts, merge/dedupe logic) is not duplicated here —
+see this feature's build session and `sessions-log.md` under 2026-08-22; this section covers only the UI
+surface.
+
+**Store.** New `$lib/stores/githubWatchPins.ts`, kept separate from `githubWatch.ts` (same split as
+`newsBrief.ts`/`newsPreferences.ts`: one store owns the read-only Live Feed preview/refresh pair, the
+other owns the user-editable settings list). `loadGithubWatchPins()` (`GET /api/github/watch/pinned-repos`)
+and `setGithubWatchPins()` (`PUT /api/github/watch/pinned-repos`, whole-list replace). Saving here does
+not itself refresh the feed — same "takes effect on next generation" posture §7.18 established for the
+News Brief — the user triggers that via the existing "GitHub Watch Feed Refresh" link.
+
+**Settings card.** New "Pinned GitHub Repos" card on the Settings page, placed after "Daily News Brief".
+Unlike that card's fixed chip-grid (§7.14) — there's no fixed pool of valid pinned repos, any
+`owner/repo` slug is legal — this is a free-text list editor: a text input + "Add" button appending to a
+local array (client-side regex check for early feedback, `owner/repo` shape only), each entry rendered
+as a removable chip, gated "Save" button matching the `assistantNameUnchanged`-style disabled pattern
+(disabled when the local list matches the loaded store state).
+
+**Live Feed badge.** `GithubWatchRepo`'s TS interface (`githubWatch.ts`) gained a `source: 'watched' |
+'pinned'` field matching the backend model. `PreviewsPanel.svelte`'s GitHub block (§7.20) renders a small
+📌 badge next to a repo's label when `source === 'pinned'`, distinguishing it from an actually-watched
+repo — reuses the existing `preview-news-article-*` row markup unchanged otherwise. No "Ask about this"
+button here either (§7.20's constraint is unchanged) — pinning doesn't add chat involvement.
+
+**Caveat.** Pinned repos still require `GITHUB_TOKEN` to be configured, same as watched repos (the
+release-lookup call is the same authenticated endpoint either way) — a user with zero watched repos but
+several pinned ones still needs a token set.
+
+**Verification.** `svelte-check`: 0 errors/warnings. Live-verified against the running dev server and
+real GitHub data: pinned `ollama/ollama`, `jundot/omlx`, and `microsoft/foundry-local` via the new
+Settings card, triggered a refresh, and confirmed all three resolved real release data and rendered with
+the 📌 badge in the Live Feed panel (one iteration corrected `ml-explore/mlx` to `jundot/omlx` after
+Michael flagged it as the wrong repo for "oMLX" — the pinned-repos feature itself is slug-agnostic, so
+this was a one-line data fix via the Settings card, not a code change).
+
+**Follow-up: link straight to Releases, not the repo homepage.** Both `repo_url` construction sites in
+`build_watch_feed()` (`backend/github_watch.py`) originally pointed at the bare repo (GitHub's own
+`html_url` for watched repos, a synthesized `https://github.com/{full_name}` for pinned ones) — clicking
+a row took you to the repo's homepage, one extra click from the release info the row is actually about.
+Changed both to `https://github.com/{full_name}/releases` (applied to watched entries too, for
+consistency, at Michael's request — this block only ever shows release data, so both entry types should
+land on the same page). Live-verified: all three pinned repos' links now open directly on their Releases
+tab.

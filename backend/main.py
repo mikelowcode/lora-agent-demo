@@ -1001,12 +1001,18 @@ class NewsBriefOpenResponse(BaseModel):
 
 
 class GithubWatchRepo(BaseModel):
-    """One watched repo's entry in the GitHub Watch Feed."""
+    """
+    One entry in the GitHub Watch Feed — either a repo the user has
+    actually clicked "Watch" on in GitHub (source="watched") or a repo
+    they've pinned for release-only tracking, independent of GitHub's
+    Watch/subscriptions relationship (source="pinned").
+    """
     key:             str
     label:           str
     repo_url:        str
     latest_release:  dict[str, Any] | None = None
     error:           str | None = None
+    source:          Literal["watched", "pinned"] = "watched"
 
 
 class GithubWatchPreviewResponse(BaseModel):
@@ -1025,6 +1031,19 @@ class GithubWatchPreviewResponse(BaseModel):
 class GithubWatchOpenResponse(BaseModel):
     """Response body for POST /github/watch/refresh — always a fresh fetch."""
     success: bool = True
+
+
+class PinnedGithubReposResponse(BaseModel):
+    """Response body for GET/PUT /github/watch/pinned-repos."""
+    repos: list[str] = Field(default_factory=list)
+
+
+class PinnedGithubReposRequest(BaseModel):
+    """
+    Payload accepted by PUT /github/watch/pinned-repos — full-list
+    replace, same semantics as PUT /news/preferences's topics field.
+    """
+    repos: list[str]
 
 
 class HackerNewsStory(BaseModel):
@@ -2701,10 +2720,70 @@ async def post_github_watch_refresh() -> GithubWatchOpenResponse:
     needed here, same as news_brief.build_brief().
     """
     mm = _require_memory_manager()
-    repos = await github_watch.build_watch_feed()
+    pinned = await asyncio.to_thread(mm.get_pinned_github_repos)
+    repos = await github_watch.build_watch_feed(pinned_full_names=pinned)
     await asyncio.to_thread(mm.set_github_watch_cache, repos)
 
     return GithubWatchOpenResponse()
+
+
+_PINNED_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+_PINNED_REPOS_MAX = 20
+
+
+@app.get(
+    "/github/watch/pinned-repos",
+    response_model = PinnedGithubReposResponse,
+    summary        = "Read the user's pinned GitHub repos",
+)
+async def get_pinned_github_repos() -> PinnedGithubReposResponse:
+    """
+    Local-only, no GitHub call — pinned repos are release-tracked
+    independent of GitHub's Watch/subscriptions relationship (no email
+    noise), merged into the feed by POST /github/watch/refresh.
+    """
+    mm = _require_memory_manager()
+    repos = await asyncio.to_thread(mm.get_pinned_github_repos)
+    return PinnedGithubReposResponse(repos=repos)
+
+
+@app.put(
+    "/github/watch/pinned-repos",
+    response_model = PinnedGithubReposResponse,
+    summary        = "Set the user's pinned GitHub repos",
+)
+async def put_pinned_github_repos(
+    request: PinnedGithubReposRequest,
+) -> PinnedGithubReposResponse:
+    """
+    Full-list replace. Does not touch an already-cached watch feed —
+    changes take effect on the next POST /github/watch/refresh, same
+    "changes take effect on the next generation" posture as
+    PUT /news/preferences.
+    """
+    mm = _require_memory_manager()
+
+    if len(request.repos) > _PINNED_REPOS_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"repos must have at most {_PINNED_REPOS_MAX} entries, "
+                   f"got {len(request.repos)}.",
+        )
+    invalid = [r for r in request.repos if not _PINNED_REPO_RE.match(r)]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid repo slug(s), expected 'owner/repo': {invalid}",
+        )
+    lowered = [r.lower() for r in request.repos]
+    if len(lowered) != len(set(lowered)):
+        raise HTTPException(
+            status_code=422, detail="repos must not contain duplicates."
+        )
+
+    await asyncio.to_thread(mm.set_pinned_github_repos, request.repos)
+    repos = await asyncio.to_thread(mm.get_pinned_github_repos)
+    return PinnedGithubReposResponse(repos=repos)
 
 
 @app.get(

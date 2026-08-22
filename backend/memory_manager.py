@@ -151,7 +151,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION   = 14         # increment when schema changes require migration
+_SCHEMA_VERSION   = 15         # increment when schema changes require migration
 _EMBEDDING_DIM    = 768        # EmbeddingGemma-300M-4bit output dimension
 _EMBEDDING_FORMAT = ">768f"    # big-endian float32 × 768
 
@@ -665,6 +665,12 @@ class MemoryManager:
                             id              INTEGER PRIMARY KEY CHECK (id = 1),
                             assistant_name  TEXT
                         );
+
+                        CREATE TABLE IF NOT EXISTS pinned_github_repos (
+                            id              INTEGER PRIMARY KEY CHECK (id = 1),
+                            full_names_json TEXT    NOT NULL DEFAULT '[]',
+                            updated_at      REAL    NOT NULL
+                        );
                     """)
 
                     conn.execute(
@@ -767,6 +773,17 @@ class MemoryManager:
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes (created_at)"
                     )
+                conn.commit()
+
+                # Same self-heal, same rationale, for pinned_github_repos
+                # (schema v15, pinned GitHub repos independent of Watch).
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS pinned_github_repos (
+                        id              INTEGER PRIMARY KEY CHECK (id = 1),
+                        full_names_json TEXT    NOT NULL DEFAULT '[]',
+                        updated_at      REAL    NOT NULL
+                    );
+                """)
                 conn.commit()
 
             finally:
@@ -1019,6 +1036,18 @@ class MemoryManager:
                 CREATE TABLE IF NOT EXISTS assistant_settings (
                     id              INTEGER PRIMARY KEY CHECK (id = 1),
                     assistant_name  TEXT
+                );
+            """)
+
+        if from_version < 15:
+            logger.info(
+                "Applying migration v14→v15: creating pinned_github_repos table."
+            )
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS pinned_github_repos (
+                    id              INTEGER PRIMARY KEY CHECK (id = 1),
+                    full_names_json TEXT    NOT NULL DEFAULT '[]',
+                    updated_at      REAL    NOT NULL
                 );
             """)
 
@@ -2377,6 +2406,77 @@ class MemoryManager:
                 logger.info(
                     "set_news_preferences: home_country=%r local_query=%r topics=%r.",
                     home_country, local_query, topics,
+                )
+            finally:
+                conn.close()
+
+    # -----------------------------------------------------------------------
+    # Pinned GitHub Repos — release-only tracking independent of GitHub's
+    # Watch/subscriptions relationship (schema v15)
+    # -----------------------------------------------------------------------
+
+    def get_pinned_github_repos(self) -> list[str]:
+        """
+        Read the pinned repo list.
+
+        Returns [] when no row exists yet — unlike get_news_preferences(),
+        there is no None-vs-empty distinction to make at the API layer: an
+        empty pinned list and "never configured" both render identically
+        (no pinned entries in the merged GitHub Watch Feed).
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT full_names_json FROM pinned_github_repos WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
+            return []
+        return json.loads(row["full_names_json"])
+
+    def set_pinned_github_repos(self, full_names: list[str]) -> None:
+        """
+        Insert or update pinned_github_repos (row id=1). Whole-list
+        overwrite, same semantics as set_news_preferences().
+
+        Parameters
+        ----------
+        full_names :
+            "owner/repo" slugs. Format validation (owner/repo shape) and
+            dedupe are the caller's responsibility (main.py's
+            PUT /github/watch/pinned-repos) — this method only enforces a
+            max-count guard, same "shape here, domain rules at the API
+            layer" split set_news_preferences() uses for topics.
+
+        Raises
+        ------
+        ValueError
+            If `full_names` has more than 20 entries.
+        """
+        if len(full_names) > 20:
+            raise ValueError(
+                f"full_names must have at most 20 entries, got {len(full_names)}"
+            )
+
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO pinned_github_repos (id, full_names_json, updated_at)
+                    VALUES (1, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        full_names_json = excluded.full_names_json,
+                        updated_at      = excluded.updated_at
+                    """,
+                    (json.dumps(full_names), now),
+                )
+                conn.commit()
+                logger.info(
+                    "set_pinned_github_repos: full_names=%r.", full_names
                 )
             finally:
                 conn.close()

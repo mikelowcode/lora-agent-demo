@@ -109,10 +109,12 @@ async def fetch_latest_release(token: str, full_name: str) -> dict[str, Any] | N
         }
 
 
-async def build_watch_feed() -> list[dict[str, Any]]:
+async def build_watch_feed(
+    pinned_full_names: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Fetch the full watch feed: every watched repo, each paired with its
-    latest release (or None).
+    latest release (or None), plus any pinned repos not already watched.
 
     Never raises — a missing token or a failure to even list watched repos
     degrades to a single-entry feed carrying the error message (same
@@ -121,10 +123,23 @@ async def build_watch_feed() -> list[dict[str, Any]]:
     try/except around this call, same as its news_brief.build_brief()
     counterpart). Per-repo failure containment for the release lookup only
     — a single repo's release lookup failing (rate limit mid-loop,
-    transient error) degrades that one row, not the whole feed.
+    transient error) degrades that one row, not the whole feed. Neither
+    the no-token nor the failed-subscriptions-lookup case attempts pinned
+    repos — both mean the token itself is unusable, which pinned repos'
+    release lookups need just as much as watched repos' do.
 
-    Returns [{key, label, repo_url, latest_release, error}, ...] — one
-    entry per watched repo, in the order GitHub returns them.
+    Parameters
+    ----------
+    pinned_full_names :
+        "owner/repo" slugs to track independently of GitHub's Watch
+        relationship (see mm.get_pinned_github_repos()). Any entry that
+        matches an already-watched repo (case-insensitively) is skipped —
+        the watched entry wins and is not duplicated.
+
+    Returns [{key, label, repo_url, latest_release, error, source}, ...]
+    — one entry per watched repo (source="watched"), in the order GitHub
+    returns them, followed by one entry per pinned repo not already
+    watched (source="pinned").
     """
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
@@ -137,6 +152,7 @@ async def build_watch_feed() -> list[dict[str, Any]]:
         return [_error_entry(str(exc))]
 
     feed: list[dict[str, Any]] = []
+    watched_names: set[str] = set()
     for repo in repos:
         full_name = repo.get("full_name", "")
         if not full_name:
@@ -150,12 +166,35 @@ async def build_watch_feed() -> list[dict[str, Any]]:
             latest_release = None
             error = str(exc)
 
+        watched_names.add(full_name.lower())
         feed.append({
             "key":            full_name,
             "label":          full_name,
-            "repo_url":       repo.get("html_url", ""),
+            "repo_url":       f"https://github.com/{full_name}/releases",
             "latest_release": latest_release,
             "error":          error,
+            "source":         "watched",
+        })
+
+    for full_name in (pinned_full_names or []):
+        if full_name.lower() in watched_names:
+            continue
+
+        try:
+            latest_release = await fetch_latest_release(token, full_name)
+            error = None
+        except Exception as exc:
+            logger.warning("github_watch: release lookup failed for pinned %r — %s", full_name, exc)
+            latest_release = None
+            error = str(exc)
+
+        feed.append({
+            "key":            full_name,
+            "label":          full_name,
+            "repo_url":       f"https://github.com/{full_name}/releases",
+            "latest_release": latest_release,
+            "error":          error,
+            "source":         "pinned",
         })
 
     return feed

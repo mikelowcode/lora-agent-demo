@@ -349,7 +349,12 @@
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <span class="preview-news-article-title">{repo.label}</span>
+                    <span class="preview-news-article-title">
+                      {repo.label}
+                      {#if repo.source === 'pinned'}
+                        <span class="preview-pin-badge" title="Pinned — not a GitHub Watch subscription">📌</span>
+                      {/if}
+                    </span>
                     {#if repo.error}
                       <span class="preview-news-article-source">unavailable</span>
                     {:else if repo.latest_release}
@@ -564,6 +569,12 @@
   .preview-news-article-source {
     font-size: 11px;
     color: var(--text-tertiary);
+  }
+
+  .preview-pin-badge {
+    font-size: 10px;
+    margin-left: 2px;
+    opacity: 0.75;
   }
 
   .preview-news-article-ask {

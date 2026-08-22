@@ -3,6 +3,8 @@ Tests for the GitHub Watch Feed endpoints in main.py:
 
   GET  /github/watch/preview
   POST /github/watch/refresh
+  GET  /github/watch/pinned-repos
+  PUT  /github/watch/pinned-repos
 
 Follows the same TestClient + real-temp-file-MemoryManager pattern as
 test_main_news_endpoints.py. github_watch.build_watch_feed() is mocked
@@ -91,3 +93,80 @@ class TestWatchRefresh:
             test_client.post("/github/watch/refresh")
 
         mock_build.assert_awaited_once()
+
+    def test_passes_stored_pinned_repos_to_build_watch_feed(self, client):
+        test_client, mm = client
+        mm.set_pinned_github_repos(["ollama/ollama", "ml-explore/mlx"])
+
+        with patch.object(
+            main.github_watch, "build_watch_feed", new=AsyncMock(return_value=_FAKE_REPOS)
+        ) as mock_build:
+            test_client.post("/github/watch/refresh")
+
+        mock_build.assert_awaited_once_with(
+            pinned_full_names=["ollama/ollama", "ml-explore/mlx"]
+        )
+
+
+class TestPinnedRepos:
+    def test_get_returns_empty_list_by_default(self, client):
+        test_client, _ = client
+        resp = test_client.get("/github/watch/pinned-repos")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"repos": []}
+
+    def test_put_happy_path_persists_and_echoes(self, client):
+        test_client, mm = client
+        resp = test_client.put(
+            "/github/watch/pinned-repos",
+            json={"repos": ["ollama/ollama", "ml-explore/mlx"]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"repos": ["ollama/ollama", "ml-explore/mlx"]}
+        assert mm.get_pinned_github_repos() == ["ollama/ollama", "ml-explore/mlx"]
+
+    def test_get_reflects_previously_put_list(self, client):
+        test_client, _ = client
+        test_client.put("/github/watch/pinned-repos", json={"repos": ["ollama/ollama"]})
+
+        resp = test_client.get("/github/watch/pinned-repos")
+        assert resp.json() == {"repos": ["ollama/ollama"]}
+
+    def test_put_rejects_malformed_slug(self, client):
+        test_client, _ = client
+        resp = test_client.put(
+            "/github/watch/pinned-repos", json={"repos": ["not-a-slug"]}
+        )
+        assert resp.status_code == 422
+
+    def test_put_rejects_slug_with_extra_slash(self, client):
+        test_client, _ = client
+        resp = test_client.put(
+            "/github/watch/pinned-repos", json={"repos": ["o/r/extra"]}
+        )
+        assert resp.status_code == 422
+
+    def test_put_rejects_over_max_count(self, client):
+        test_client, _ = client
+        too_many = [f"owner/repo{i}" for i in range(21)]
+        resp = test_client.put("/github/watch/pinned-repos", json={"repos": too_many})
+        assert resp.status_code == 422
+
+    def test_put_rejects_case_insensitive_duplicates(self, client):
+        test_client, _ = client
+        resp = test_client.put(
+            "/github/watch/pinned-repos",
+            json={"repos": ["Ollama/Ollama", "ollama/ollama"]},
+        )
+        assert resp.status_code == 422
+
+    def test_put_does_not_trigger_a_refresh(self, client):
+        test_client, _ = client
+        with patch.object(
+            main.github_watch, "build_watch_feed", new=AsyncMock()
+        ) as mock_build:
+            test_client.put("/github/watch/pinned-repos", json={"repos": ["ollama/ollama"]})
+
+        mock_build.assert_not_called()

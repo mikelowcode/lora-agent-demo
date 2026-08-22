@@ -134,3 +134,78 @@ class TestBuildWatchFeed:
             result = asyncio.run(github_watch.build_watch_feed())
 
         assert result == []
+
+    def test_watched_repos_get_watched_source(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+        repos = [{"full_name": "o/r", "html_url": "https://github.com/o/r"}]
+
+        with patch.object(github_watch, "fetch_watched_repos", AsyncMock(return_value=repos)), \
+             patch.object(github_watch, "fetch_latest_release", AsyncMock(return_value=None)):
+            result = asyncio.run(github_watch.build_watch_feed())
+
+        assert result[0]["source"] == "watched"
+
+    def test_pinned_repo_not_in_watched_appears_with_pinned_source(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+
+        with patch.object(github_watch, "fetch_watched_repos", AsyncMock(return_value=[])), \
+             patch.object(github_watch, "fetch_latest_release", AsyncMock(return_value=None)):
+            result = asyncio.run(
+                github_watch.build_watch_feed(pinned_full_names=["ollama/ollama"])
+            )
+
+        assert len(result) == 1
+        assert result[0] == {
+            "key":            "ollama/ollama",
+            "label":          "ollama/ollama",
+            "repo_url":       "https://github.com/ollama/ollama/releases",
+            "latest_release": None,
+            "error":          None,
+            "source":         "pinned",
+        }
+
+    def test_pinned_repo_matching_watched_is_not_duplicated(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+        watched = [{"full_name": "Ollama/Ollama", "html_url": "https://github.com/Ollama/Ollama"}]
+
+        with patch.object(github_watch, "fetch_watched_repos", AsyncMock(return_value=watched)), \
+             patch.object(github_watch, "fetch_latest_release", AsyncMock(return_value=None)):
+            result = asyncio.run(
+                github_watch.build_watch_feed(pinned_full_names=["ollama/ollama"])
+            )
+
+        assert len(result) == 1
+        assert result[0]["key"] == "Ollama/Ollama"
+        assert result[0]["source"] == "watched"
+
+    def test_pinned_repo_release_failure_contained(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+        watched = [{"full_name": "o/watched", "html_url": "https://github.com/o/watched"}]
+
+        async def fake_release(token, full_name):
+            if full_name == "o/pinned-broken":
+                raise RuntimeError("boom")
+            return None
+
+        with patch.object(github_watch, "fetch_watched_repos", AsyncMock(return_value=watched)), \
+             patch.object(github_watch, "fetch_latest_release", fake_release):
+            result = asyncio.run(
+                github_watch.build_watch_feed(
+                    pinned_full_names=["o/pinned-broken", "o/pinned-ok"]
+                )
+            )
+
+        assert len(result) == 3
+        by_key = {r["key"]: r for r in result}
+        assert by_key["o/watched"]["source"] == "watched"
+        assert by_key["o/pinned-broken"]["source"] == "pinned"
+        assert "boom" in by_key["o/pinned-broken"]["error"]
+        assert by_key["o/pinned-ok"]["error"] is None
+
+    def test_missing_token_short_circuits_even_with_pinned_repos(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        result = asyncio.run(
+            github_watch.build_watch_feed(pinned_full_names=["ollama/ollama"])
+        )
+        assert len(result) == 1
+        assert result[0]["error"] == "GITHUB_TOKEN not configured"

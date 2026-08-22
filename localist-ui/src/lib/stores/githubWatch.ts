@@ -30,6 +30,7 @@ export interface GithubWatchRepo {
   repo_url:       string;
   latest_release: GithubWatchRelease | null;
   error:          string | null;
+  source:         'watched' | 'pinned';
 }
 
 export interface GithubWatchPreview {

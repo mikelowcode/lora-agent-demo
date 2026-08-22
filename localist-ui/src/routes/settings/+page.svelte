@@ -39,6 +39,13 @@
     loadAssistantName,
     setAssistantName
   } from '$lib/stores/assistantName';
+  import {
+    githubWatchPins,
+    githubWatchPinsLoading,
+    githubWatchPinsError,
+    loadGithubWatchPins,
+    setGithubWatchPins
+  } from '$lib/stores/githubWatchPins';
 
   const EVICTION_PRESETS: { value: EvictionPreset; label: string }[] = [
     { value: '7d',      label: '7 days' },
@@ -57,6 +64,9 @@
     });
     void loadAssistantName().then(() => {
       assistantNameInput = $assistantName.assistant_name;
+    });
+    void loadGithubWatchPins().then(() => {
+      pinnedRepos = $githubWatchPins.repos;
     });
   });
 
@@ -222,6 +232,56 @@
       newsSaveResult = city
         ? `Saved — Local area set to "${city}".`
         : 'Saved — Local area cleared.';
+    }
+  }
+
+  // Pinned GitHub repos — release-only tracking independent of GitHub's
+  // Watch/subscriptions relationship (no PR/issue email noise). Local list
+  // mirrors the store, synced whenever it reloads, saved explicitly via the
+  // Save button (whole-list replace, same as News Preferences' topics).
+  const PINNED_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+  let pinnedRepos: string[] = [];
+  let pinnedRepoInput = '';
+  let pinnedRepoAddError: string | null = null;
+  let pinnedReposSaveResult: string | null = null;
+
+  function addPinnedRepo() {
+    pinnedReposSaveResult = null;
+    const trimmed = pinnedRepoInput.trim();
+    if (!trimmed) return;
+    if (!PINNED_REPO_RE.test(trimmed)) {
+      pinnedRepoAddError = 'Expected the form "owner/repo", e.g. ollama/ollama.';
+      return;
+    }
+    if (pinnedRepos.some((r) => r.toLowerCase() === trimmed.toLowerCase())) {
+      pinnedRepoAddError = 'Already pinned.';
+      return;
+    }
+    if (pinnedRepos.length >= 20) {
+      pinnedRepoAddError = 'Up to 20 pinned repos.';
+      return;
+    }
+    pinnedRepos = [...pinnedRepos, trimmed];
+    pinnedRepoInput = '';
+    pinnedRepoAddError = null;
+  }
+
+  function removePinnedRepo(repo: string) {
+    pinnedRepos = pinnedRepos.filter((r) => r !== repo);
+    pinnedReposSaveResult = null;
+  }
+
+  $: pinnedReposUnchanged =
+    JSON.stringify(pinnedRepos) === JSON.stringify($githubWatchPins.repos);
+
+  async function handleSavePinnedRepos() {
+    pinnedReposSaveResult = null;
+    const ok = await setGithubWatchPins(pinnedRepos);
+    if (ok) {
+      pinnedReposSaveResult =
+        pinnedRepos.length > 0
+          ? `Saved — ${pinnedRepos.length} repo${pinnedRepos.length === 1 ? '' : 's'} pinned.`
+          : 'Saved — no repos pinned.';
     }
   }
 
@@ -606,6 +666,65 @@
       {/if}
     </section>
 
+    <!-- Pinned GitHub Repos -->
+    <section class="settings-card">
+      <div class="card-title">Pinned GitHub Repos</div>
+      <p class="card-desc">
+        Track release notes for repos without clicking "Watch" on GitHub —
+        pinning here doesn't subscribe you to that repo's PR/issue emails.
+        Shows up alongside any repos you do watch in the Live Feed panel's
+        GitHub block.
+      </p>
+
+      <label class="news-field-label" for="pinned-repo-input">Add a repo (owner/repo)</label>
+      <div class="pinned-repo-add-row">
+        <input
+          id="pinned-repo-input"
+          class="news-text-input"
+          type="text"
+          autocomplete="off"
+          bind:value={pinnedRepoInput}
+          placeholder="e.g. ollama/ollama"
+          on:input={() => (pinnedRepoAddError = null)}
+          on:keydown={(e) => e.key === 'Enter' && addPinnedRepo()}
+        />
+        <button type="button" class="seg-btn" on:click={addPinnedRepo}>Add</button>
+      </div>
+      {#if pinnedRepoAddError}
+        <p class="card-hint" style="color:var(--error)">{pinnedRepoAddError}</p>
+      {/if}
+
+      {#if pinnedRepos.length > 0}
+        <div class="news-topic-grid">
+          {#each pinnedRepos as repo (repo)}
+            <span class="pinned-repo-chip">
+              {repo}
+              <button
+                type="button"
+                class="pinned-repo-remove"
+                aria-label={`Remove ${repo}`}
+                on:click={() => removePinnedRepo(repo)}
+              >&times;</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+
+      <button
+        type="button"
+        class="seg-btn news-save-btn"
+        disabled={$githubWatchPinsLoading || pinnedReposUnchanged}
+        on:click={handleSavePinnedRepos}
+      >Save</button>
+
+      {#if pinnedReposSaveResult}
+        <p class="card-hint">{pinnedReposSaveResult}</p>
+      {/if}
+      {#if $githubWatchPinsError}
+        <p class="card-hint" style="color:var(--error)">{$githubWatchPinsError}</p>
+      {/if}
+    </section>
+
     <!-- Version -->
     <section class="settings-card row">
       <div class="card-title">Version</div>
@@ -821,4 +940,35 @@
     margin-top: var(--sp-3);
     align-self: flex-start;
   }
+
+  .pinned-repo-add-row {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+  }
+  .pinned-repo-add-row .news-text-input { flex: 1; }
+
+  .pinned-repo-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: var(--bg-raised);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+
+  .pinned-repo-remove {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 var(--sp-1);
+  }
+  .pinned-repo-remove:hover { color: var(--error); }
 </style>
