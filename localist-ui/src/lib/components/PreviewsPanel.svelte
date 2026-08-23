@@ -16,7 +16,8 @@
     fetchGithubWatchPreview,
     githubWatchOpening,
     githubWatchError,
-    openGithubWatch
+    openGithubWatch,
+    type GithubWatchRepo
   } from '$lib/stores/githubWatch';
   import {
     hackerNewsPreview,
@@ -153,6 +154,53 @@
     await submitTask(
       instruction,
       { hn_story_url: story.url },
+      task_id,
+      conversationId,
+      conversationTitle
+    );
+    await goto(`/conversation/${conversationId}`);
+  }
+
+  // Same pattern as handleAskAboutArticle/handleAskAboutHackerNewsStory.
+  // The instruction names both "release notes" and "latest release" so
+  // Planner's _priority3_github_release gate fires regardless of which
+  // phrase survives future wording tweaks (planner.py). github_repo pins
+  // MCPToolDispatcher._run_github_release() to this exact repo, skipping
+  // its own github_search resolution step; github_tag additionally pins
+  // the exact release shown in the feed right now, so the summary can't
+  // drift onto a newer release that lands between this click and the
+  // model's tool call.
+  async function handleAskAboutRepo(repo: GithubWatchRepo): Promise<void> {
+    if ($tasksStore.finalizing || !repo.latest_release) return;
+
+    const instruction = `Summarize the release notes for the latest release of ${repo.label}`;
+    const task_id = crypto.randomUUID();
+    const now = Date.now();
+    const conversationId = get(currentConversationId);
+
+    let conversationTitle: string | undefined;
+    if (get(isFirstTurnOfConversation)) {
+      conversationTitle = instruction.length > 60 ? instruction.slice(0, 60) + '…' : instruction;
+      isFirstTurnOfConversation.set(false);
+    }
+
+    chatHistoryStore.update((turns) => [
+      ...turns,
+      { role: 'user', content: instruction, task_id, timestamp: now },
+      {
+        role: 'assistant',
+        content: '',
+        task_id,
+        timestamp: now + 1,
+        status: 'planning',
+        status_message: 'Planning…',
+        sources: []
+      }
+    ]);
+
+    await submitTask(
+      instruction,
+      { github_repo: repo.key, github_tag: repo.latest_release.tag_name },
       task_id,
       conversationId,
       conversationTitle
@@ -315,8 +363,9 @@
 
       <!-- GitHub Watch Feed block — live. Same shape as the News block
            above (single refresh link + preview.repos rendered generically),
-           no "Ask about this" button — this feed never touches chat
-           (github_watch.py has no Planner/MCPToolDispatcher involvement). -->
+           plus a per-repo "Ask about this" button (parity with News/Hacker
+           News) pinning github_release via context.github_repo/github_tag
+           — see handleAskAboutRepo. -->
       <section class="preview-block">
         <div class="preview-block-header">
           <span class="preview-block-title">GitHub Watch Feed</span>
@@ -349,12 +398,7 @@
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <span class="preview-news-article-title">
-                      {repo.label}
-                      {#if repo.source === 'pinned'}
-                        <span class="preview-pin-badge" title="Pinned — not a GitHub Watch subscription">📌</span>
-                      {/if}
-                    </span>
+                    <span class="preview-news-article-title">{repo.label}</span>
                     {#if repo.error}
                       <span class="preview-news-article-source">unavailable</span>
                     {:else if repo.latest_release}
@@ -368,6 +412,15 @@
                       <span class="preview-news-article-source">no releases yet</span>
                     {/if}
                   </a>
+                  {#if repo.latest_release && !repo.error}
+                    <button
+                      type="button"
+                      class="preview-news-article-ask"
+                      on:click={() => handleAskAboutRepo(repo)}
+                      disabled={$tasksStore.finalizing}
+                      title="Ask about this release in the current chat"
+                    >Ask about this</button>
+                  {/if}
                 </div>
               {/each}
             {/if}
@@ -569,12 +622,6 @@
   .preview-news-article-source {
     font-size: 11px;
     color: var(--text-tertiary);
-  }
-
-  .preview-pin-badge {
-    font-size: 10px;
-    margin-left: 2px;
-    opacity: 0.75;
   }
 
   .preview-news-article-ask {

@@ -1145,10 +1145,11 @@ as a removable chip, gated "Save" button matching the `assistantNameUnchanged`-s
 (disabled when the local list matches the loaded store state).
 
 **Live Feed badge.** `GithubWatchRepo`'s TS interface (`githubWatch.ts`) gained a `source: 'watched' |
-'pinned'` field matching the backend model. `PreviewsPanel.svelte`'s GitHub block (§7.20) renders a small
-📌 badge next to a repo's label when `source === 'pinned'`, distinguishing it from an actually-watched
-repo — reuses the existing `preview-news-article-*` row markup unchanged otherwise. No "Ask about this"
-button here either (§7.20's constraint is unchanged) — pinning doesn't add chat involvement.
+'pinned'` field matching the backend model. `PreviewsPanel.svelte`'s GitHub block (§7.20) originally
+rendered a small 📌 badge next to a repo's label when `source === 'pinned'`, distinguishing it from an
+actually-watched repo — reuses the existing `preview-news-article-*` row markup unchanged otherwise. The
+badge was removed and an "Ask about this" button added in §7.27; the `source` field itself is unchanged
+and still distinguishes the two at the data level.
 
 **Caveat.** Pinned repos still require `GITHUB_TOKEN` to be configured, same as watched repos (the
 release-lookup call is the same authenticated endpoint either way) — a user with zero watched repos but
@@ -1169,3 +1170,31 @@ Changed both to `https://github.com/{full_name}/releases` (applied to watched en
 consistency, at Michael's request — this block only ever shows release data, so both entry types should
 land on the same page). Live-verified: all three pinned repos' links now open directly on their Releases
 tab.
+
+### 7.27 GitHub Watch Feed "Ask about this" + Pin Badge Removal (2026-08-23)
+
+§7.20/§7.26 both explicitly noted the GitHub Watch Feed block had no "Ask about this" button and never
+touched chat, unlike the News Brief (§7.16) and Hacker News (§7.21) blocks — `github_watch.py` itself has
+no Planner/`MCPToolDispatcher` involvement. This closes that gap using backend plumbing that turned out
+to already be in place: `MCPToolDispatcher._run_github_release()` (§14.12) already accepted a
+caller-supplied `context["github_repo"]` ("owner/repo") and `context["github_tag"]` pin, and
+`_priority3_github_release` (`planner.py`) already routes to `github_release` on `"release notes"` /
+`"latest release"` phrasing — the same caller-supplied-pin convention `news_search`'s
+`context["news_article_url"]` (§14.10) established, just never wired to a frontend caller for this tool
+before now. No backend changes were needed.
+
+**Frontend.** New `handleAskAboutRepo(repo: GithubWatchRepo)` in `PreviewsPanel.svelte`, same shape as
+`handleAskAboutArticle`/`handleAskAboutHackerNewsStory`: sends `Summarize the release notes for the
+latest release of {repo.label}` (deliberately containing both `"release notes"` and `"latest release"` so
+the Planner gate fires regardless of future keyword-list edits) with
+`context: { github_repo: repo.key, github_tag: repo.latest_release.tag_name }`. Pinning the tag as well as
+the repo — not just "latest" — means the summary can't drift onto a newer release landing between the
+click and the model's tool call. A per-row "Ask about this" button (reusing the existing
+`preview-news-article-ask` styling) is shown for both `watched` and `pinned` entries alike whenever
+`repo.latest_release` exists and `repo.error` doesn't — nothing to summarize otherwise.
+
+**Pin badge removal.** At Michael's request, the 📌 emoji badge introduced in §7.26 was removed from the
+GitHub block entirely (`.preview-pin-badge` CSS rule deleted along with it) — `source: 'watched' |
+'pinned'` still exists on the data model, it just isn't surfaced visually anymore.
+
+**Verification.** `svelte-check`: 0 errors/warnings.
