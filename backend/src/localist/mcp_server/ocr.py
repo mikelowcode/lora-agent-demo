@@ -20,6 +20,14 @@ main.py's is_apple_silicon check. Like file_ops.py, every function here
 raises on failure rather than swallowing errors into a result string — the
 MCP protocol layer converts a raised exception into isError=True for the
 client (see file_ops.py's module docstring for the underlying mechanism).
+
+This module implements the OCRProvider protocol (see ocr_provider.py) as
+VisionOCRProvider, defined at the bottom of this file. The free functions
+above remain the primary — currently the only — entry point every caller
+uses directly (mcp_server/main.py's ocr_extract tool, wiki_agent.py's raw
+ingest, main.py's chat-upload route); VisionOCRProvider exists so this
+module can be selected polymorphically once a second OCRProvider
+implementation exists, without changing any of the logic below.
 """
 
 from __future__ import annotations
@@ -253,3 +261,15 @@ def _extract_pdf(resolved: Path, max_pdf_pages: int) -> str:
         return "\n\n".join(ocr_parts)
     finally:
         doc.close()
+
+
+class VisionOCRProvider:
+    """Apple Vision/PyMuPDF implementation of OCRProvider (see ocr_provider.py)."""
+
+    def extract_text(
+        self,
+        path:          str,
+        mime_type:     str,
+        max_pdf_pages: int | None = None,
+    ) -> str:
+        return extract_text(path, mime_type, max_pdf_pages)

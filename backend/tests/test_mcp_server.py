@@ -44,6 +44,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from localist.mcp_server import chart, file_ops, github, hacker_news, news_search, ocr, search_format, url_fetch, web_search
 from localist.mcp_server.main import mcp as mcp_app
+from localist.mcp_server.ocr_provider import OCRProvider
 
 
 # ---------------------------------------------------------------------------
@@ -1309,6 +1310,28 @@ class TestOcrGetMaxPdfPages:
     def test_invalid_value_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("LOCALIST_OCR_MAX_PDF_PAGES", "not-a-number")
         assert ocr.get_max_pdf_pages() == ocr._DEFAULT_MAX_PDF_PAGES
+
+
+class TestOcrProvider:
+    """VisionOCRProvider structurally conforms to OCRProvider (see
+    ocr_provider.py) and delegates to the module-level extract_text()
+    unchanged."""
+
+    def test_vision_ocr_provider_satisfies_protocol(self):
+        assert isinstance(ocr.VisionOCRProvider(), OCRProvider)
+
+    def test_vision_ocr_provider_delegates_to_module_extract_text(self, monkeypatch):
+        calls = []
+
+        def fake_extract_text(path, mime_type, max_pdf_pages=None):
+            calls.append((path, mime_type, max_pdf_pages))
+            return "delegated text"
+
+        monkeypatch.setattr(ocr, "extract_text", fake_extract_text)
+        result = ocr.VisionOCRProvider().extract_text("a.png", "image/png", 7)
+
+        assert result == "delegated text"
+        assert calls == [("a.png", "image/png", 7)]
 
 
 # ---------------------------------------------------------------------------

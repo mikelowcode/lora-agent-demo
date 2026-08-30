@@ -256,3 +256,26 @@ text isn't an OCR use case, and routing it through Gemma 4B would reopen the
 backend-independence/multimodal-contract tradeoffs §22.8 rejected. If
 image captioning becomes a real want, it needs its own scoping pass, not a
 quiet extension of `ocr_extract`.
+
+### 22.11 `OCRProvider` Protocol (OSS release, step 6)
+
+`extract_text(path, mime_type, max_pdf_pages=None) -> str` (§22.2) was
+already the single interface every caller used — `mcp_server/main.py`'s
+`ocr_extract` tool, `wiki_agent.py`'s raw ingest, `main.py`'s chat-upload
+route — but it wasn't formally typed as a swappable interface. New
+`mcp_server/ocr_provider.py` defines `OCRProvider` as a
+`@runtime_checkable typing.Protocol`, mirroring `base_runtime_client.py`'s
+`BaseRuntimeClient` (same rationale: structural typing, no forced
+inheritance, trivial to mock/isinstance-check). `ocr.py` gained one small
+additive class, `VisionOCRProvider`, that implements the Protocol by
+delegating to the existing module-level `extract_text()` — no change to
+`_ocr_image_bytes`, `_extract_pdf`, sandboxing, or any call site; every
+caller still uses the free function directly today.
+
+This exists to give a future second implementation (e.g. an Ollama
+vision-model route for non-Apple-Silicon platforms, scoped separately and
+not yet built) a real interface to implement against. **§22.10's boundary
+is unaffected and applies to any `OCRProvider` implementation, not just
+this one** — the Protocol's docstring says so explicitly: text extraction
+only, never general image understanding, regardless of which model or
+platform is doing the extracting.
