@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { get } from 'svelte/store';
+  import { apiUrl } from '$lib/api';
   import { tasksStore, submitTask, markDiffApplied } from '$lib/stores/tasks';
   import { chatHistoryStore, type Turn } from '$lib/stores/chatHistory';
   import { currentConversationId, isFirstTurnOfConversation } from '$lib/stores/conversation';
@@ -42,7 +43,7 @@
   async function pinWikiPage(stem: string) {
     attachError = null;
     try {
-      const res = await fetch('/api/chat/pin-wiki-page', {
+      const res = await fetch(apiUrl('/api/chat/pin-wiki-page'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stem }),
@@ -98,7 +99,7 @@
     form.append('file', file);
 
     try {
-      const res = await fetch('/api/chat/files', { method: 'POST', body: form });
+      const res = await fetch(apiUrl('/api/chat/files'), { method: 'POST', body: form });
       const body = await res.json();
       if (!res.ok) {
         if (isOcrUpload) {
@@ -126,7 +127,7 @@
 
   async function removeAttachedFile(filename: string) {
     try {
-      await fetch(`/api/chat/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      await fetch(apiUrl(`/api/chat/files/${encodeURIComponent(filename)}`), { method: 'DELETE' });
     } catch {
       // Best-effort — backend cache may already be clear on restart
     }

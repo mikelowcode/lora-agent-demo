@@ -20,6 +20,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface GithubWatchPinsState {
   repos: string[];
@@ -35,7 +36,7 @@ export async function loadGithubWatchPins(): Promise<void> {
   githubWatchPinsLoading.set(true);
   githubWatchPinsError.set(null);
   try {
-    const res = await fetch('/api/github/watch/pinned-repos');
+    const res = await fetch(apiUrl('/api/github/watch/pinned-repos'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: GithubWatchPinsState = await res.json();
     githubWatchPins.set(data);
@@ -50,7 +51,7 @@ export async function setGithubWatchPins(repos: string[]): Promise<boolean> {
   githubWatchPinsLoading.set(true);
   githubWatchPinsError.set(null);
   try {
-    const res = await fetch('/api/github/watch/pinned-repos', {
+    const res = await fetch(apiUrl('/api/github/watch/pinned-repos'), {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ repos }),

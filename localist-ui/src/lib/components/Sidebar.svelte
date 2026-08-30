@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { browser } from '$app/environment';
+  import { apiUrl } from '$lib/api';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { startNewConversation } from '$lib/stores/conversation';
@@ -45,7 +46,7 @@
     conversationsLoading = true;
     conversationsError = null;
     try {
-      const res = await fetch('/api/chat/history/conversations');
+      const res = await fetch(apiUrl('/api/chat/history/conversations'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: { conversations: ConversationSummary[] } = await res.json();
       conversations = data.conversations;
@@ -92,7 +93,7 @@
     deletingConversationId = c.conversation_id;
     deleteConversationError = null;
     try {
-      const res = await fetch(`/api/chat/history/conversations/${c.conversation_id}`, { method: 'DELETE' });
+      const res = await fetch(apiUrl(`/api/chat/history/conversations/${c.conversation_id}`), { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       await loadConversations();
@@ -184,7 +185,7 @@
     deletingPath = entry.path;
     deleteError = null;
     try {
-      const res = await fetch(`/api/files?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
+      const res = await fetch(apiUrl(`/api/files?path=${encodeURIComponent(entry.path)}`), { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       if (entry.type === 'wiki') await loadWikiFiles();

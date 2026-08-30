@@ -16,6 +16,7 @@ import { goto } from '$app/navigation';
 import { tasksStore } from './tasks';
 import type { Task } from './tasks';
 import { currentConversationId } from './conversation';
+import { apiUrl } from '$lib/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -124,7 +125,7 @@ export async function loadRawFiles(): Promise<void> {
   rawLoading.set(true);
   rawError.set(null);
   try {
-    const res = await fetch('/api/files/raw');
+    const res = await fetch(apiUrl('/api/files/raw'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { files: FileEntry[] } = await res.json();
     rawFiles.set(data.files);
@@ -139,7 +140,7 @@ export async function loadWikiFiles(): Promise<void> {
   wikiLoading.set(true);
   wikiError.set(null);
   try {
-    const res = await fetch('/api/files/wiki');
+    const res = await fetch(apiUrl('/api/files/wiki'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { files: FileEntry[] } = await res.json();
     wikiFiles.set(data.files);
@@ -154,7 +155,7 @@ export async function loadGeneratedFiles(): Promise<void> {
   generatedLoading.set(true);
   generatedError.set(null);
   try {
-    const res = await fetch('/api/files/generated');
+    const res = await fetch(apiUrl('/api/files/generated'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { files: FileEntry[] } = await res.json();
     generatedFiles.set(data.files);
@@ -174,7 +175,7 @@ export async function uploadFile(file: File): Promise<FileEntry> {
   // FastAPI expects the field name "file" (singular) — UploadFile = File(...)
   form.append('file', file);
 
-  const res = await fetch('/api/files/upload', { method: 'POST', body: form });
+  const res = await fetch(apiUrl('/api/files/upload'), { method: 'POST', body: form });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -199,7 +200,7 @@ export async function saveGeneratedFile(
   extension: 'txt' | 'md',
   content:   string,
 ): Promise<FileEntry> {
-  const res = await fetch('/api/files/generated', {
+  const res = await fetch(apiUrl('/api/files/generated'), {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filename, extension, content }),
@@ -237,7 +238,7 @@ export async function ingestFile(entry: FileEntry): Promise<void> {
 
   let response: Response;
   try {
-    response = await fetch('/api/task/stream', {
+    response = await fetch(apiUrl('/api/task/stream'), {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

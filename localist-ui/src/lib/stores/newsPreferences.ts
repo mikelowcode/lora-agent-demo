@@ -11,6 +11,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface NewsPreferencesState {
   home_country: string;
@@ -34,7 +35,7 @@ export async function loadNewsPreferences(): Promise<void> {
   newsPreferencesLoading.set(true);
   newsPreferencesError.set(null);
   try {
-    const res = await fetch('/api/news/preferences');
+    const res = await fetch(apiUrl('/api/news/preferences'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: NewsPreferencesState = await res.json();
     newsPreferences.set(data);
@@ -53,7 +54,7 @@ export async function setNewsPreferences(
   newsPreferencesLoading.set(true);
   newsPreferencesError.set(null);
   try {
-    const res = await fetch('/api/news/preferences', {
+    const res = await fetch(apiUrl('/api/news/preferences'), {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ home_country, local_query, topics }),

@@ -10,6 +10,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface ReembedCorpusResponse {
   reembedded: number;
@@ -24,7 +25,7 @@ export async function reembedCorpus(): Promise<ReembedCorpusResponse | null> {
   reembedLoading.set(true);
   reembedError.set(null);
   try {
-    const res = await fetch('/api/memory/reembed', { method: 'POST' });
+    const res = await fetch(apiUrl('/api/memory/reembed'), { method: 'POST' });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);

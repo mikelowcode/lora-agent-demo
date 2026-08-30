@@ -24,6 +24,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface NewsBriefArticle {
   title:        string;
@@ -56,7 +57,7 @@ export const newsBriefError: Writable<string | null> = writable(null);
 export async function fetchNewsBriefPreview(): Promise<void> {
   newsBriefPreviewLoading.set(true);
   try {
-    const res = await fetch('/api/news/brief/preview');
+    const res = await fetch(apiUrl('/api/news/brief/preview'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: NewsBriefPreview = await res.json();
     newsBriefPreview.set(data);
@@ -77,7 +78,7 @@ export async function openNewsBrief(): Promise<boolean> {
   newsBriefOpening.set(true);
   newsBriefError.set(null);
   try {
-    const res = await fetch('/api/news/brief/open', { method: 'POST' });
+    const res = await fetch(apiUrl('/api/news/brief/open'), { method: 'POST' });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);

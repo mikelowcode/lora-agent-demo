@@ -16,6 +16,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface AssistantNameState {
   assistant_name: string;
@@ -31,7 +32,7 @@ export async function loadAssistantName(): Promise<void> {
   assistantNameLoading.set(true);
   assistantNameError.set(null);
   try {
-    const res = await fetch('/api/settings/assistant-name');
+    const res = await fetch(apiUrl('/api/settings/assistant-name'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: AssistantNameState = await res.json();
     assistantName.set(data);
@@ -51,7 +52,7 @@ export async function setAssistantName(name: string): Promise<boolean> {
   assistantNameLoading.set(true);
   assistantNameError.set(null);
   try {
-    const res = await fetch('/api/settings/assistant-name', {
+    const res = await fetch(apiUrl('/api/settings/assistant-name'), {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ assistant_name: name }),

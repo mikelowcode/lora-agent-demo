@@ -15,6 +15,7 @@
  */
 
 import { writable, get, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface PendingDiff {
   page_name: string;
@@ -119,7 +120,7 @@ export async function loadEpisodeTurns(): Promise<void> {
   params.set('offset', String(offset));
 
   try {
-    const res = await fetch(`/api/chat/history?${params}`);
+    const res = await fetch(apiUrl(`/api/chat/history?${params}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { turns: EpisodeTurn[]; total: number } = await res.json();
     episodeTurns.set(data.turns);
@@ -135,7 +136,7 @@ export async function loadConversationsList(): Promise<void> {
   conversationsLoading.set(true);
   conversationsError.set(null);
   try {
-    const res = await fetch('/api/chat/history/conversations');
+    const res = await fetch(apiUrl('/api/chat/history/conversations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { conversations: ConversationSummary[] } = await res.json();
     conversations.set(data.conversations);

@@ -9,6 +9,8 @@
  * entirely in ChatPanel.svelte.
  */
 
+import { apiUrl } from '$lib/api';
+
 export interface ApplyDiffResult {
   success: boolean;
   error?: string;
@@ -30,7 +32,7 @@ export async function applyDiff(
   diff: string
 ): Promise<ApplyDiffResult> {
   try {
-    const res = await fetch('/api/wiki/apply-diff', {
+    const res = await fetch(apiUrl('/api/wiki/apply-diff'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_id, page_name, diff })

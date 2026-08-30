@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { health, checkHealth } from '$lib/stores/server';
+  import { apiUrl } from '$lib/api';
   import { modelConfig, RUNTIME_BACKENDS, RUNTIME_BACKEND_LABELS, type RuntimeBackend } from '$lib/stores/model';
   import {
     runtimeBackendSwitchLoading,
@@ -78,7 +79,7 @@
 
   async function loadMemoryStats() {
     try {
-      const res = await fetch('/api/memory/stats');
+      const res = await fetch(apiUrl('/api/memory/stats'));
       if (!res.ok) return;
       const data = await res.json();
       corpusStale = Boolean(data.corpus_stale);

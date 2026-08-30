@@ -16,6 +16,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface GithubWatchRelease {
   tag_name:     string;
@@ -49,7 +50,7 @@ export const githubWatchError: Writable<string | null> = writable(null);
 export async function fetchGithubWatchPreview(): Promise<void> {
   githubWatchPreviewLoading.set(true);
   try {
-    const res = await fetch('/api/github/watch/preview');
+    const res = await fetch(apiUrl('/api/github/watch/preview'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: GithubWatchPreview = await res.json();
     githubWatchPreview.set(data);
@@ -69,7 +70,7 @@ export async function openGithubWatch(): Promise<boolean> {
   githubWatchOpening.set(true);
   githubWatchError.set(null);
   try {
-    const res = await fetch('/api/github/watch/refresh', { method: 'POST' });
+    const res = await fetch(apiUrl('/api/github/watch/refresh'), { method: 'POST' });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);

@@ -18,6 +18,7 @@
   // component needing its own taskId-change-detection logic.
   import { onMount } from 'svelte';
   import { TYPE_LABELS, TYPE_COLORS } from '$lib/stores/episodes';
+  import { apiUrl } from '$lib/api';
 
   export let taskId: string;
   export let content: string;
@@ -39,7 +40,7 @@
     loading = true;
     try {
       const res = await fetch(
-        `/api/memory/episodes/related?${new URLSearchParams({ content, task_id: taskId, limit: '10' })}`
+        apiUrl(`/api/memory/episodes/related?${new URLSearchParams({ content, task_id: taskId, limit: '10' })}`)
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: { episodes: RelatedEpisode[] } = await res.json();

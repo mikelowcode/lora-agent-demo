@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface HealthState {
   healthy: boolean;
@@ -41,12 +42,10 @@ export const connectivityLabel = derived(health, ($h) => {
   return 'offline';
 });
 
-const BASE = '/api';
-
 export async function checkHealth(): Promise<void> {
   health.update((s) => ({ ...s, checking: true }));
   try {
-    const res = await fetch(`${BASE}/health`);
+    const res = await fetch(apiUrl('/api/health'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     health.set({
@@ -68,7 +67,7 @@ export async function checkHealth(): Promise<void> {
 
 export async function loadAgents(): Promise<void> {
   try {
-    const res = await fetch(`${BASE}/agents`);
+    const res = await fetch(apiUrl('/api/agents'));
     if (!res.ok) return;
     const data = await res.json();
     agents.set({ agents: data.agents ?? [], loaded: true });

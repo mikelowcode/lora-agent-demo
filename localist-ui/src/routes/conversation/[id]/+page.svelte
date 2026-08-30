@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import ChatPanel from '$lib/components/ChatPanel.svelte';
+  import { apiUrl } from '$lib/api';
   import { currentConversationId } from '$lib/stores/conversation';
   import { chatHistoryStore, type Turn } from '$lib/stores/chatHistory';
   import type { Task } from '$lib/stores/tasks';
@@ -29,7 +30,7 @@
   async function loadConversationHistory(conversationId: string): Promise<void> {
     try {
       const res = await fetch(
-        `/api/chat/history?conversation_id=${encodeURIComponent(conversationId)}&limit=200`
+        apiUrl(`/api/chat/history?conversation_id=${encodeURIComponent(conversationId)}&limit=200`)
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: { turns: BackendChatTurn[] } = await res.json();

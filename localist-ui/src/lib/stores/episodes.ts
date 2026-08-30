@@ -6,6 +6,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export interface EpisodeItem {
   id:              number;
@@ -97,7 +98,7 @@ export async function loadEpisodes(opts: {
   if (opts.typeFilter) params.set('episode_type', opts.typeFilter);
 
   try {
-    const res = await fetch(`/api/memory/episodes?${params}`);
+    const res = await fetch(apiUrl(`/api/memory/episodes?${params}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { episodes: EpisodeItem[]; total: number; offset: number; limit: number }
       = await res.json();
@@ -138,7 +139,7 @@ export async function refreshPendingCount(): Promise<void> {
   params.set('limit', '1');   // only `total` is needed, not the row data
 
   try {
-    const res = await fetch(`/api/memory/episodes?${params}`);
+    const res = await fetch(apiUrl(`/api/memory/episodes?${params}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { total: number } = await res.json();
     pendingCount.set(data.total);
@@ -154,21 +155,21 @@ export async function refreshPendingCount(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function approveEpisode(id: number): Promise<boolean> {
-  const res = await fetch(`/api/memory/episodes/${id}/approve`, { method: 'POST' });
+  const res = await fetch(apiUrl(`/api/memory/episodes/${id}/approve`), { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data: { episode_id: number; status: string; updated: boolean } = await res.json();
   return data.updated;
 }
 
 export async function rejectEpisode(id: number): Promise<boolean> {
-  const res = await fetch(`/api/memory/episodes/${id}/reject`, { method: 'POST' });
+  const res = await fetch(apiUrl(`/api/memory/episodes/${id}/reject`), { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data: { episode_id: number; status: string; updated: boolean } = await res.json();
   return data.updated;
 }
 
 export async function reactivateEpisode(id: number): Promise<boolean> {
-  const res = await fetch(`/api/memory/episodes/${id}/reactivate`, { method: 'POST' });
+  const res = await fetch(apiUrl(`/api/memory/episodes/${id}/reactivate`), { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data: { episode_id: number; status: string; updated: boolean } = await res.json();
   return data.updated;

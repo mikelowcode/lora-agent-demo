@@ -14,6 +14,7 @@
 
 import { writable, type Writable } from 'svelte/store';
 import { modelConfig, type RuntimeBackend } from './model';
+import { apiUrl } from '$lib/api';
 
 export const runtimeBackendSwitchLoading: Writable<boolean> = writable(false);
 export const runtimeBackendSwitchError: Writable<string | null> = writable(null);
@@ -25,7 +26,7 @@ export async function switchRuntimeBackend(
   runtimeBackendSwitchLoading.set(true);
   runtimeBackendSwitchError.set(null);
   try {
-    const res = await fetch('/api/settings/runtime-backend', {
+    const res = await fetch(apiUrl('/api/settings/runtime-backend'), {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ backend, chat_model: chatModel })
@@ -48,7 +49,7 @@ export async function switchRuntimeBackend(
 
 export async function fetchBackendModels(backend: RuntimeBackend): Promise<string[]> {
   try {
-    const res = await fetch(`/api/settings/runtime-backend/${backend}/models`);
+    const res = await fetch(apiUrl(`/api/settings/runtime-backend/${backend}/models`));
     if (!res.ok) return [];
     const data = await res.json();
     return data.models ?? [];
@@ -61,7 +62,7 @@ export async function pinChatModel(backend: RuntimeBackend, chatModel: string): 
   runtimeBackendSwitchLoading.set(true);
   runtimeBackendSwitchError.set(null);
   try {
-    const res = await fetch(`/api/settings/runtime-backend/${backend}/chat-model`, {
+    const res = await fetch(apiUrl(`/api/settings/runtime-backend/${backend}/chat-model`), {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ chat_model: chatModel })

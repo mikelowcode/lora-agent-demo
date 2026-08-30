@@ -13,6 +13,7 @@
  */
 
 import { writable, type Writable } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export type EvictionPreset = '7d' | '30d' | '90d' | 'forever';
 
@@ -30,7 +31,7 @@ export async function loadRetentionSettings(): Promise<void> {
   retentionSettingsLoading.set(true);
   retentionSettingsError.set(null);
   try {
-    const res = await fetch('/api/settings/retention');
+    const res = await fetch(apiUrl('/api/settings/retention'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: RetentionSettingsState = await res.json();
     retentionSettings.set(data);
@@ -50,7 +51,7 @@ export async function setRetentionPreset(preset: EvictionPreset): Promise<void> 
   retentionSettingsLoading.set(true);
   retentionSettingsError.set(null);
   try {
-    const res = await fetch('/api/settings/retention', {
+    const res = await fetch(apiUrl('/api/settings/retention'), {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ eviction_preset: preset }),

@@ -7,6 +7,7 @@
 import { writable, get } from 'svelte/store';
 import type { FileEntry } from './files';
 import { isOcrExtension } from '$lib/utils/ocr';
+import { apiUrl } from '$lib/api';
 
 export const selectedFile = writable<FileEntry | null>(null);
 export const fileContent = writable<string | null>(null);
@@ -39,7 +40,7 @@ export async function selectFile(file: FileEntry): Promise<void> {
   fileContentLoading.set(true);
 
   try {
-    const res = await fetch(`/api/files/content?path=${encodeURIComponent(file.path)}`);
+    const res = await fetch(apiUrl(`/api/files/content?path=${encodeURIComponent(file.path)}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: { path: string; content: string } = await res.json();
     fileContent.set(data.content);

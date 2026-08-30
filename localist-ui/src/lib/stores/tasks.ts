@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { apiUrl } from '$lib/api';
 
 export type TaskStatus = 'idle' | 'planning' | 'streaming' | 'complete' | 'failed';
 
@@ -74,8 +75,6 @@ export const tasksStore = writable<TasksState>({
   streaming: false,
   finalizing: false
 });
-
-const BASE = '/api';
 
 // Stable for the lifetime of this page load. Groups conversation_log
 // entries server-side so working memory persists across turns within
@@ -193,7 +192,7 @@ export function submitTask(
   return new Promise<string>((resolve) => {
     (async () => {
       try {
-        const res = await fetch(`${BASE}/task/stream`, {
+        const res = await fetch(apiUrl(`/api/task/stream`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body
