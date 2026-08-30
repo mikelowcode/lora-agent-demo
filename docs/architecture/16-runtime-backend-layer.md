@@ -248,6 +248,19 @@ unit-testable function — see Testing note below) in this order:
    went wrong") are distinguishable in logs.
 3. **Keyword-only** — universal fallback when neither of the above is available.
 
+**Updated 2026-08-30 (OSS packaging pass):** tier 2's gate,
+`Settings.embedding_engine_enabled` (`LOCALIST_EMBEDDING_ENGINE_ENABLED`),
+now defaults to `False` — previously `True`, meaning a fresh install used to
+attempt the ~400MB EmbeddingGemma download silently on first startup
+whenever Apple Silicon was detected. Keyword-only (tier 3) is now the true
+zero-config default on every platform; enabling tier 2 is an explicit
+opt-in, offered interactively by `start_localist.sh` on first run (only
+when `.env` doesn't already set the key, this is Apple Silicon, and the
+`localist[mlx]` extra — see `backend/pyproject.toml` — looks installed).
+The precedence order and `_configure_embedding_source()`'s branch logic
+above are unchanged; only the default value feeding into branch 2's
+condition moved.
+
 `GET /health`'s `embed_model_found` field mirrors this same precedence (fixed 2026-07-14 —
 previously hardcoded to check `EmbeddingEngine` only, which misreported `false` whenever tier 1 was
 actually active).

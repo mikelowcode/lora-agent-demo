@@ -64,6 +64,40 @@ if [[ ! -f "$BACKEND_DIR/.env" ]]; then
     echo "WARNING: $BACKEND_DIR/.env not found — environment variables may be missing."
 fi
 
+# ---------------------------------------------------------------------------
+# First-run prompt: local embedding model (EmbeddingGemma via MLX)
+#
+# LOCALIST_EMBEDDING_ENGINE_ENABLED defaults to false (backend/src/localist/
+# main.py's Settings) — this is the one place a user gets asked about the
+# ~400MB download instead of it happening silently. Only fires when: .env
+# exists but doesn't already set the key (respects an explicit choice,
+# including a previous run of this same prompt), this is Apple Silicon (the
+# only platform EmbeddingEngine can run on), the `[mlx]` extra looks
+# installed, and stdin is a real terminal (never blocks a non-interactive
+# run — CI, a backgrounded invocation, etc.).
+# ---------------------------------------------------------------------------
+if [[ -f "$BACKEND_DIR/.env" ]] \
+    && ! grep -q '^LOCALIST_EMBEDDING_ENGINE_ENABLED=' "$BACKEND_DIR/.env" \
+    && [[ "$(uname -s)" == "Darwin" && "$(uname -m)" =~ ^(arm64|aarch64)$ ]] \
+    && [[ -t 0 ]] \
+    && "$VENV_PYTHON" -c "import mlx_embeddings" &>/dev/null; then
+    echo ""
+    echo "Local embedding model not yet configured (EmbeddingGemma via MLX, ~400MB,"
+    echo "downloaded once from Hugging Face on first use). Without it, memory/RAG"
+    echo "retrieval runs in keyword-only mode — still fully functional, just not"
+    echo "semantic. You can change this later via LOCALIST_EMBEDDING_ENGINE_ENABLED"
+    echo "in backend/.env."
+    read -r -p "Download and enable it now? [y/N] " EMBED_REPLY
+    if [[ "$EMBED_REPLY" =~ ^[Yy]$ ]]; then
+        echo "LOCALIST_EMBEDDING_ENGINE_ENABLED=true" >> "$BACKEND_DIR/.env"
+        echo "  Enabled — will download on the next backend startup."
+    else
+        echo "LOCALIST_EMBEDDING_ENGINE_ENABLED=false" >> "$BACKEND_DIR/.env"
+        echo "  Skipped — running in keyword-only mode. Change anytime in backend/.env."
+    fi
+    echo ""
+fi
+
 # Warn if ports already in use (do not abort — let uvicorn surface the error)
 for PORT in 8001 8003 5173; do
     if lsof -ti tcp:$PORT &>/dev/null; then

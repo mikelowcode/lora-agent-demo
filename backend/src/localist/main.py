@@ -108,14 +108,19 @@ can be overridden via environment variables or a .env file:
                                        string (default) = not configured, falls back to
                                        EmbeddingEngine.
   LOCALIST_EMBEDDING_ENGINE_ENABLED    Load the standalone MLX-LM EmbeddingEngine at
-                                       startup (bool, default True).  Set False to run
-                                       in keyword-only mode without loading the model.
-                                       Ignored when LOCALIST_EMBEDDING_MODEL is set and
-                                       found by the active runtime backend — the runtime
-                                       backend's own embed() is used instead.  Also a
-                                       no-op on non-Apple-Silicon platforms regardless of
-                                       its value, since EmbeddingEngine's mlx_lm
-                                       dependency only runs on Apple Silicon.
+                                       startup (bool, default False as of the OSS
+                                       packaging pass — opt-in, not silent-by-default;
+                                       see backend/pyproject.toml's [mlx] extra and
+                                       start_localist.sh's first-run prompt). Set True
+                                       to download (~400MB, first run only) and load
+                                       the model; leave False/unset to run in
+                                       keyword-only mode. Ignored when
+                                       LOCALIST_EMBEDDING_MODEL is set and found by the
+                                       active runtime backend — the runtime backend's
+                                       own embed() is used instead. Also a no-op on
+                                       non-Apple-Silicon platforms regardless of its
+                                       value, since EmbeddingEngine's mlx_lm dependency
+                                       only runs on Apple Silicon.
 """
 
 from __future__ import annotations
@@ -227,8 +232,11 @@ class Settings(BaseSettings):
     memory_db:                str | None = None   # None → <project_root>/localist_memory.db
 
     # EmbeddingEngine — standalone MLX-LM embedding, backend-agnostic.
-    # Set False to skip model load and run MemoryManager in keyword-only mode.
-    embedding_engine_enabled: bool = True
+    # Opt-in (default False) — set True to download (~400MB, first run only)
+    # and load the model; unset/False runs MemoryManager in keyword-only
+    # mode. See start_localist.sh's first-run prompt, which offers to set
+    # this explicitly instead of leaving it to this silent default.
+    embedding_engine_enabled: bool = False
 
     # Agent behaviour
     auto_apply:      bool = False

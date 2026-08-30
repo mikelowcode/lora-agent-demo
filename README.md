@@ -43,7 +43,7 @@ reached via `MCPToolDispatcher`'s normal chat-turn dispatch; see Attachments bel
 
 - Python 3.13, Node.js
 - One runtime backend: oMLX (chat model on :8000, macOS Apple Silicon only), [Ollama](https://ollama.com) (local or Ollama Cloud, :11434, any OS), or Azure AI Foundry
-- MLX EmbeddingGemma (the default local embedding model) requires Apple Silicon; on other platforms, set `LOCALIST_EMBEDDING_MODEL` to an Ollama-served embedding model instead (or fall back to keyword-only retrieval)
+- MLX EmbeddingGemma (the local embedding model, opt-in) requires Apple Silicon and the `[mlx]` extra; on other platforms, set `LOCALIST_EMBEDDING_MODEL` to an Ollama-served embedding model instead (or fall back to keyword-only retrieval)
 - OCR'd image/PDF chat uploads (see Attachments below) require macOS on Apple Silicon (Apple Vision framework); on other platforms those uploads are cleanly rejected with an explanatory error, everything else in the app is unaffected
 
 ## Installation
@@ -60,7 +60,7 @@ pip install -e ".[mlx,ocr,chart,dev]"   # Apple Silicon: full local stack (MLX e
 is cross-platform. See `THIRD_PARTY_LICENSES.md` — both `[mlx]` and `[ocr]` pull in copyleft
 dependencies (GPLv3, AGPL-3.0 respectively).
 
-First backend startup downloads the local embedding model (`mlx-community/embeddinggemma-300m-4bit`, ~400MB) from the Hugging Face Hub and caches it — a one-time cost that needs internet access. Without it (or on non-Apple-Silicon hardware, where it can't run at all), episodic memory and RAG retrieval still work in keyword-only mode, or via an Ollama-served embedding model instead (see `LOCALIST_EMBEDDING_MODEL` below).
+The local embedding model is opt-in, not automatic — `LOCALIST_EMBEDDING_ENGINE_ENABLED` defaults to `false`, so a fresh install runs in keyword-only retrieval mode with zero download. `./start_localist.sh` asks once, interactively, on first run (only when `.env` doesn't already set the key, this is Apple Silicon, and the `[mlx]` extra looks installed) whether to enable it; answering yes downloads `mlx-community/embeddinggemma-300m-4bit` (~400MB, one-time, needs internet access) on the next backend startup. Set `LOCALIST_EMBEDDING_ENGINE_ENABLED=true` in `backend/.env` yourself to skip that prompt. Without it (or on non-Apple-Silicon hardware, where it can't run at all), episodic memory and RAG retrieval still work in keyword-only mode, or via an Ollama-served embedding model instead (see `LOCALIST_EMBEDDING_MODEL` below).
 
 Localist's own code is MIT-licensed (see `LICENSE`), but this downloaded model is not — EmbeddingGemma is built on Google's Gemma and distributed under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms), not MIT. See `THIRD_PARTY_LICENSES.md` for the full dependency and model-weight license audit.
 

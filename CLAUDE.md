@@ -84,10 +84,14 @@ All inference goes through a `BaseRuntimeClient`-conforming runtime selected at 
 active at startup is still the one active when a request is handled; always resolve it from
 `_state.runtime` at request time, never capture it once and hold onto it. The Settings UI's Runtime
 Backend control is wired to this endpoint (§7.10, §16.6) — a live switch there is a real,
-confirm-gated action, not a display preference. Vector embeddings are always local via
-`EmbeddingEngine` (`mlx-community/embeddinggemma-300m-4bit`,
-768-dim) *unless* a runtime-backend embed source is configured and active (§16.4) — independent of
-the chat backend only in the keyword-only/EmbeddingEngine case, not universally.
+confirm-gated action, not a display preference. Vector embeddings, when enabled, run locally via
+`EmbeddingEngine` (`mlx-community/embeddinggemma-300m-4bit`, 768-dim) — but `EmbeddingEngine` is
+opt-in (`LOCALIST_EMBEDDING_ENGINE_ENABLED`, default `false` as of the OSS packaging pass; see
+`backend/pyproject.toml`'s `[mlx]` extra and `start_localist.sh`'s first-run prompt), not the
+silent default it once was. Three-tier precedence (§16.4): a runtime-backend embed source, if
+configured and active, wins over `EmbeddingEngine`; `EmbeddingEngine`, if enabled and available,
+wins over the true zero-config default — keyword-only (BM25) retrieval. Independent of the chat
+backend only in the keyword-only/EmbeddingEngine case, not universally.
 
 `MemoryManager` is the SQLite-backed store (WAL mode) for two independent memory types:
 **episodic memory** (typed, sparse facts — preferences, corrections, decisions — extracted
