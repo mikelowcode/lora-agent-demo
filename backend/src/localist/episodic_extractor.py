@@ -1,5 +1,5 @@
 """
-LORA — Episodic Extraction Pipeline
+Localist — Episodic Extraction Pipeline
 =====================================
 Converts raw user instructions and agent responses into typed, scored
 EpisodeRecord candidates for storage in the episodes table.
@@ -130,7 +130,7 @@ _EXTRACTION_SYSTEM = (
     "User says: Remember that I prefer dark mode.\n"
     "You respond: The user prefers dark mode.\n\n"
     "User says: Remember that I'm building on an M1 MacBook Air.\n"
-    "You respond: The user is building the LORA project on an M1 "
+    "You respond: The user is building the Localist project on an M1 "
     "MacBook Air running macOS."
 )
 

@@ -1,5 +1,5 @@
 """
-Phase 4 integration tests — LORA ControllerAgent execution pipeline.
+Phase 4 integration tests — Localist ControllerAgent execution pipeline.
 
 Covers:
   - Direct answer path: P6 fallback → PromptBuilder slot 2 only
@@ -1928,8 +1928,8 @@ class TestPrebuiltPromptPassthrough:
 # wiki_doc wiring — _load_persona() frontmatter handling
 # ---------------------------------------------------------------------------
 
-_LORA_PERSONA_CONTENT = (
-    "You are LORA, a local‑first thinking partner.\n"
+_PERSONA_CONTENT = (
+    "You are {{ASSISTANT_NAME}}, a local‑first thinking partner.\n"
     "You speak clearly, directly, and in a natural conversational tone.\n"
     "You use tools when they are needed and follow tool instructions precisely.\n"
     "When you state facts, you cite where they came from."
@@ -1946,43 +1946,44 @@ def _mock_doc(path_str: str, content: str):
 class TestLoadPersonaWikiDoc:
 
     def test_no_frontmatter_byte_identical(self):
-        """Zero-behavior-change: plain content → cache equals content[:2000] exactly."""
+        """Zero-behavior-change: plain content (name substituted) → cache equals the substituted content[:2000] exactly."""
         mm = MagicMock()
-        mm.get_assistant_name.return_value = "LORA"
+        mm.get_assistant_name.return_value = "Localist"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", _LORA_PERSONA_CONTENT)
+            _mock_doc("/wiki/persona.md", _PERSONA_CONTENT)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
         ctrl._load_persona()
 
-        assert ctrl._persona_cache == _LORA_PERSONA_CONTENT[:2000]
+        expected = _PERSONA_CONTENT.replace("{{ASSISTANT_NAME}}", "Localist")
+        assert ctrl._persona_cache == expected[:2000]
 
     def test_frontmatter_stripped_body_only(self):
         """Forward-looking: frontmatter lines are excluded; body text is present."""
         content = (
             "---\n"
-            "title: LORA Persona\n"
+            "title: Persona\n"
             "type: system\n"
             "created: 2026-06-01\n"
             "---\n"
             "\n"
-            "You are LORA, a local-first thinking partner.\n"
+            "You are {{ASSISTANT_NAME}}, a local-first thinking partner.\n"
             "You are helpful, concise, and precise.\n"
         )
         mm = MagicMock()
-        mm.get_assistant_name.return_value = "LORA"
+        mm.get_assistant_name.return_value = "Localist"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", content)
+            _mock_doc("/wiki/persona.md", content)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
         ctrl._load_persona()
 
-        assert "title: LORA Persona" not in ctrl._persona_cache
+        assert "title: Persona" not in ctrl._persona_cache
         assert "type: system" not in ctrl._persona_cache
         assert "---" not in ctrl._persona_cache
-        assert "You are LORA" in ctrl._persona_cache
+        assert "You are Localist" in ctrl._persona_cache
         assert "You are helpful" in ctrl._persona_cache
 
     def test_web_search_description_names_langsearch_by_default(self, monkeypatch):
@@ -1990,9 +1991,9 @@ class TestLoadPersonaWikiDoc:
         monkeypatch.delenv("SEARCH_PROVIDER", raising=False)
         content = "Web search fires automatically. It returns real results from LangSearch."
         mm = MagicMock()
-        mm.get_assistant_name.return_value = "LORA"
+        mm.get_assistant_name.return_value = "Localist"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", content)
+            _mock_doc("/wiki/persona.md", content)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
@@ -2005,9 +2006,9 @@ class TestLoadPersonaWikiDoc:
         monkeypatch.setenv("SEARCH_PROVIDER", "brave")
         content = "Web search fires automatically. It returns real results from LangSearch."
         mm = MagicMock()
-        mm.get_assistant_name.return_value = "LORA"
+        mm.get_assistant_name.return_value = "Localist"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", content)
+            _mock_doc("/wiki/persona.md", content)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
@@ -2027,25 +2028,25 @@ class TestLoadPersonaWikiDoc:
         mm.query_corpus.assert_not_called()
 
     def test_assistant_name_substituted_into_persona(self):
-        """"You are LORA" in the persona doc is swapped for the configured name."""
+        """The persona doc's {{ASSISTANT_NAME}} placeholder is swapped for the configured name."""
         mm = MagicMock()
         mm.get_assistant_name.return_value = "Percy"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", _LORA_PERSONA_CONTENT)
+            _mock_doc("/wiki/persona.md", _PERSONA_CONTENT)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
         ctrl._load_persona()
 
         assert "You are Percy," in ctrl._persona_cache
-        assert "You are LORA" not in ctrl._persona_cache
+        assert "{{ASSISTANT_NAME}}" not in ctrl._persona_cache
 
     def test_name_change_invalidates_cache_on_next_load(self):
         """A changed get_assistant_name() value re-fetches and re-substitutes."""
         mm = MagicMock()
         mm.get_assistant_name.return_value = "Percy"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", _LORA_PERSONA_CONTENT)
+            _mock_doc("/wiki/persona.md", _PERSONA_CONTENT)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
@@ -2068,7 +2069,7 @@ class TestLoadPersonaWikiDoc:
         mm = MagicMock()
         mm.get_assistant_name.return_value = "Percy"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", _LORA_PERSONA_CONTENT)
+            _mock_doc("/wiki/persona.md", _PERSONA_CONTENT)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
@@ -2082,7 +2083,7 @@ class TestLoadPersonaWikiDoc:
         mm = MagicMock()
         mm.get_assistant_name.return_value = "Percy"
         mm.query_corpus.return_value = [
-            _mock_doc("/wiki/lora-persona.md", _LORA_PERSONA_CONTENT)
+            _mock_doc("/wiki/persona.md", _PERSONA_CONTENT)
         ]
 
         ctrl = ControllerAgent(runtime=make_runtime(), agents=[], memory_manager=mm)
@@ -2338,11 +2339,11 @@ class TestRagSourceFrontmatterStripping:
         assert "All content is body text." in prompt
 
     def test_rag_filter_and_exclusion_unaffected(self):
-        """Score filter and lora-persona.md exclusion must be unchanged after the fix."""
+        """Score filter and persona.md exclusion must be unchanged after the fix."""
         low_score_doc   = _mock_doc("/wiki/low-score.md", "low relevance content")
         low_score_doc.relevance_score = 0.3   # below 0.55 threshold — must be excluded
 
-        persona_doc     = _mock_doc("/wiki/lora-persona.md", "persona content")
+        persona_doc     = _mock_doc("/wiki/persona.md", "persona content")
         persona_doc.relevance_score = 0.9     # above threshold but excluded by path rule
 
         good_doc        = _mock_doc("/wiki/good.md", "relevant body text about Localist")

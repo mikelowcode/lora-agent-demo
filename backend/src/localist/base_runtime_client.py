@@ -1,5 +1,5 @@
 """
-LORA — BaseRuntimeClient Protocol
+Localist — BaseRuntimeClient Protocol
 ==================================
 The unified interface that every runtime backend must satisfy.
 
@@ -46,7 +46,7 @@ from typing import Generator, Protocol, runtime_checkable
 @runtime_checkable
 class BaseRuntimeClient(Protocol):
     """
-    Structural interface for all LORA runtime backends.
+    Structural interface for all Localist runtime backends.
 
     Every concrete runtime client must implement all three methods below.
     Type-checkers (mypy, pyright) and isinstance() checks use this Protocol

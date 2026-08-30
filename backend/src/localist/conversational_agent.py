@@ -1,11 +1,11 @@
 """
-LORA — ConversationalAgent (Primary RAG Engine)
+Localist — ConversationalAgent (Primary RAG Engine)
 ================================================
 The single reasoning path for all non-ingest user queries.
 
 Architecture
 ------------
-ConversationalAgent is the primary query engine for LORA.  Every query that
+ConversationalAgent is the primary query engine for Localist.  Every query that
 is not a wiki ingest flows here.  The pipeline is:
 
   1. Query MemoryManager — semantic retrieval over the full corpus
@@ -153,7 +153,7 @@ _PROMPT_BUILDER = PromptBuilder()
 
 class ConversationalAgent:
     """
-    Corpus-aware single-inference agent.  Primary query engine for LORA.
+    Corpus-aware single-inference agent.  Primary query engine for Localist.
 
     Parameters
     ----------
@@ -319,8 +319,8 @@ class ConversationalAgent:
         #      fill the remaining slots up to max_results.
         #
         # This prevents the duplicate-content problem that occurs when both
-        # "lora-master-project-outline.md" (wiki) and
-        # "LORA Master Project Outline.md" (raw) are returned for the same
+        # "project-outline.md" (wiki) and
+        # "Project Outline.md" (raw) are returned for the same
         # query, wasting context window space on identical material.
 
         sources:  list[str] = []
@@ -502,8 +502,8 @@ def _path_to_title(path: str) -> str:
     """
     Convert a file path to a readable title.
 
-    "wiki/lora-master-project-outline.md" → "Lora Master Project Outline"
-    "/abs/path/raw/LORA Build Order.md"   → "LORA Build Order"
+    "wiki/project-outline.md"        → "Project Outline"
+    "/abs/path/raw/Build Order.md"   → "Build Order"
     """
     name = os.path.basename(path)
     name = os.path.splitext(name)[0]

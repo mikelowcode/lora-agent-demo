@@ -1,5 +1,5 @@
 """
-LORA — Planner (Rule Engine)
+Localist — Planner (Rule Engine)
 =============================
 Deterministic routing engine. Evaluates a priority-ordered set of
 conditions against the instruction and context, and produces a RoutingPlan.
@@ -2477,8 +2477,8 @@ class Planner:
 
         Path A keeps routing deterministic for explicit wiki requests.
         Path B restores score-based RAG injection for natural-language corpus
-        queries that lack a trigger keyword (e.g. "summarize the LORA Master
-        Project Outline").
+        queries that lack a trigger keyword (e.g. "summarize the Project
+        Outline").
 
         Returns a RoutingPlan with fetch_rag=True, or None if no match.
         """

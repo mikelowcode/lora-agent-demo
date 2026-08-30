@@ -1,5 +1,5 @@
 """
-LORA — Embedding Backfill Utility
+Localist — Embedding Backfill Utility
 ===================================
 Populates the ``embedding`` column for documents already in ``lora_memory.db``
 that were indexed before EmbeddingEngine was available (rows where

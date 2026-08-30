@@ -1,5 +1,5 @@
 """
-LORA — FastAPI Backend
+Localist — FastAPI Backend
 ======================
 The HTTP boundary between the Svelte UI and the agent core.
 
@@ -536,7 +536,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # socks children since none of them set their own level. httpx itself
     # only logs one INFO line per request, which stays — that's signal.
     logging.getLogger("httpcore").setLevel(logging.INFO)
-    logger.info("LORA backend starting up.")
+    logger.info("Localist backend starting up.")
 
     project_root = _PROJECT_ROOT
 
@@ -732,7 +732,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield  # — application runs —
 
-    logger.info("LORA backend shutting down.")
+    logger.info("Localist backend shutting down.")
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +740,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title       = "LORA — Local Reasoning Agent",
+    title       = "Localist — Local-First Agentic Assistant",
     description = "Multi-agent research system — WikiAgent + corpus-aware ConversationalAgent (RAG).",
     version     = "0.4.0",
     lifespan    = lifespan,
@@ -1277,7 +1277,7 @@ def _persist_chat_turn(
 )
 async def post_task(request: TaskRequest) -> TaskResponse:
     """
-    Submit an instruction to the LORA multi-agent system.
+    Submit an instruction to the Localist multi-agent system.
 
     The call blocks until the full pipeline (plan → dispatch → synthesize)
     completes.  Use POST /task/stream to receive tokens incrementally.

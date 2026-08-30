@@ -1,11 +1,11 @@
 """
-LORA — EmbeddingEngine
+Localist — EmbeddingEngine
 ======================
 Standalone, backend-agnostic embedding engine powered by mlx-embeddings.
 
 Motivation
 ----------
-Embeddings must be stable and deterministic across LORA restarts.  Tying
+Embeddings must be stable and deterministic across Localist restarts.  Tying
 them to OMLXRuntimeClient's inference model created a coupling that made
 both the embedding and the oMLX integration fragile.  This module isolates
 embedding into a single responsibility:
@@ -33,7 +33,7 @@ Architecture
 - Loaded once at startup by main.py lifespan.
 - ``engine.embed`` (a bound method) is passed as ``embed_fn`` to MemoryManager.
 - OMLXRuntimeClient.embed() is NOT called anywhere for corpus embeddings.
-- LORA_EMBEDDING_ENGINE_ENABLED=false skips load; MemoryManager runs keyword-only.
+- LOCALIST_EMBEDDING_ENGINE_ENABLED=false skips load; MemoryManager runs keyword-only.
 - Graceful degradation: load failure sets available=False and logs a warning —
   MemoryManager falls back to keyword-only scoring automatically (embed_fn=None).
 

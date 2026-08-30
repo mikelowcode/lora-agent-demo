@@ -1,7 +1,7 @@
 """
-LORA — PromptBuilder
+Localist — PromptBuilder
 ====================
-Single point of prompt assembly for all LORA agents.
+Single point of prompt assembly for all Localist agents.
 Implements the 7-slot prompt contract defined in §3 of
 LOCALIST-Architecture.md. Every agent calls PromptBuilder.build();
 no agent assembles its own prompt string.

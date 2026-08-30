@@ -1,5 +1,5 @@
 """
-LORA — FoundryRuntimeClient
+Localist — FoundryRuntimeClient
 ============================
 Concrete implementation of BaseRuntimeClient for Azure AI Foundry
 running locally.
@@ -16,7 +16,7 @@ Architectural contract
   Foundry HTTP API directly.
 - No FastAPI imports.  No agent logic.  Pure transport + error handling.
 - Satisfies BaseRuntimeClient (base_runtime_client.py) — the shared
-  interface for all LORA runtime backends.
+  interface for all Localist runtime backends.
 - Also satisfies the legacy RuntimeClient Protocol defined in
   controller_agent.py (infer + embed subset); existing call sites remain
   unchanged.

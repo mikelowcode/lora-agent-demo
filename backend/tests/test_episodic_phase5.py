@@ -1,5 +1,5 @@
 """
-Phase 5 integration tests — LORA episodic extraction pipeline.
+Phase 5 integration tests — Localist episodic extraction pipeline.
 
 Covers:
   5.1 — Deterministic signal detection: all trigger categories,
@@ -1353,13 +1353,13 @@ class TestBuildWSUSystem:
             f"Expected max_tokens=750, got {called_max_tokens!r}"
         )
 
-    # 7. Verify byte-identical prefix using the ACTUAL on-disk lora-persona.md
+    # 7. Verify byte-identical prefix using the ACTUAL on-disk persona.md
     #    content (487-token version), parsed exactly as _load_persona() does.
     #    Fails fast with a clear message if the file is missing or too short.
     def test_actual_persona_prefix_byte_identical(self):
-        persona_path = _WIKI_DIR / "lora-persona.md"
+        persona_path = _WIKI_DIR / "persona.md"
         assert persona_path.exists(), (
-            f"lora-persona.md not found at {persona_path} — "
+            f"persona.md not found at {persona_path} — "
             "run the wiki re-index before this test"
         )
         raw_content  = persona_path.read_text(encoding="utf-8")

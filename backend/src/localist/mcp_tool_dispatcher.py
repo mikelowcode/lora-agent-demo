@@ -1,5 +1,5 @@
 """
-LORA — MCP Tool Dispatcher
+Localist — MCP Tool Dispatcher
 ============================
 Was originally a drop-in replacement for the now-deleted ToolDispatcher
 (tool_dispatcher.py) at the controller_agent.py dispatch seam; as of Phase

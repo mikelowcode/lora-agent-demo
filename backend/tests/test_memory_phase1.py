@@ -1,5 +1,5 @@
 """
-Phase 1 unit tests — LORA episodic memory substrate.
+Phase 1 unit tests — Localist episodic memory substrate.
 
 Covers:
   - EpisodicMemoryWriter: lifecycle transitions (insert, supersede, retract)

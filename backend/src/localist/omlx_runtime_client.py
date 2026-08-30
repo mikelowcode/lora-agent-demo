@@ -1,5 +1,5 @@
 """
-LORA — OMLXRuntimeClient
+Localist — OMLXRuntimeClient
 =========================
 Concrete implementation of BaseRuntimeClient for the oMLX inference backend.
 
@@ -88,7 +88,7 @@ _inflight_count = 0
 # ---------------------------------------------------------------------------
 
 # Confirmed base URL — GET /v1/models returns HTTP 200 at this address.
-# Override via the base_url constructor argument or LORA_OMLX_URL env var.
+# Override via the base_url constructor argument or LOCALIST_OMLX_URL env var.
 _DEFAULT_BASE_URL      = "http://localhost:8000"
 
 _CHAT_COMPLETIONS_PATH = "/v1/chat/completions"

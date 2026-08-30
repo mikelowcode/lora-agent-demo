@@ -1,5 +1,5 @@
 """
-LORA — OllamaRuntimeClient
+Localist — OllamaRuntimeClient
 ===========================
 Concrete implementation of BaseRuntimeClient for a local Ollama server.
 

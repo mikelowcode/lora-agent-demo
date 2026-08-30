@@ -1,5 +1,5 @@
 """
-LORA — Episodic Memory Embedding Backfill
+Localist — Episodic Memory Embedding Backfill
 ==========================================
 One-off script: embeds every active `episodes` row whose `embedding` column
 is currently NULL (i.e. everything written before EpisodicMemoryWriter

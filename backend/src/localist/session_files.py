@@ -1,5 +1,5 @@
 """
-session_files.py — Ephemeral per-session file cache for LORA chat attachments.
+session_files.py — Ephemeral per-session file cache for Localist chat attachments.
 
 Stores uploaded text file content in a process-lifetime dict. Content is
 cleared on backend restart. No persistence, no wiki ingestion, no embedding.

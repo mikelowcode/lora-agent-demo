@@ -1,5 +1,5 @@
 """
-LORA — ContextProfile
+Localist — ContextProfile
 =======================
 Backend-tier-aware ceilings for how much conversation history flows into
 each turn's prompt.

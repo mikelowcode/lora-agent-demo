@@ -1,5 +1,5 @@
 """
-Phase 3 integration tests — LORA rule-based Planner.
+Phase 3 integration tests — Localist rule-based Planner.
 
 Covers:
   - Each priority level fires correctly (P1–P6)

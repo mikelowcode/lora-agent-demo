@@ -116,8 +116,8 @@ simulate certainty.
 
 #### Slot 1b — Persona
 
-**Purpose:** LORA's voice, style, tool awareness, and honor code.
-Loaded once per session from `wiki/lora-persona.md` and appended to the
+**Purpose:** The assistant's voice, style, tool awareness, and honor code.
+Loaded once per session from `wiki/persona.md` and appended to the
 system message after the identity constant.
 
 **Token ceiling:** 500 tokens (hard limit). Truncated by `PromptBuilder`
@@ -131,11 +131,11 @@ You are Localist, a local research assistant. You reason carefully, cite
 your sources, and acknowledge when you don't know something. You do not
 simulate certainty.
 
-{persona content from wiki/lora-persona.md}
+{persona content from wiki/persona.md}
 ```
 
-**Persona structure (current `wiki/lora-persona.md`):**
-As of the 2026-06-20 rewrite, `wiki/lora-persona.md` is five plain prose sentences with no internal section headers (~476 chars / ~119 tokens, roughly 24% of the 500-token hard ceiling). Persona content is intentionally undifferentiated prose rather than a fixed section template — this description should not be treated as a contract that future personas must follow.
+**Persona structure (current `wiki/persona.md`):**
+As of the 2026-06-20 rewrite, `wiki/persona.md` is five plain prose sentences with no internal section headers (~476 chars / ~119 tokens, roughly 24% of the 500-token hard ceiling). Persona content is intentionally undifferentiated prose rather than a fixed section template — this description should not be treated as a contract that future personas must follow.
 
 **Rules:**
 - Loaded by `ControllerAgent._load_persona()`, which caches the result in
@@ -161,18 +161,24 @@ As of the 2026-06-20 rewrite, `wiki/lora-persona.md` is five plain prose sentenc
   waiting for the next `_load_persona()` call to notice on its own. A
   future WikiAgent-write-triggered invalidation (the originally aspired
   behavior) is not yet built.
-- `wiki/lora-persona.md`'s "You are LORA" line is a **substitution
+- `wiki/persona.md`'s "You are {{ASSISTANT_NAME}}" line is a **substitution
   target**, not hand-edited prose: `_load_persona()` does
-  `body.replace("LORA", assistant_name)` at cache-fill time — the exact
-  same mechanism already used for the `LangSearch` → provider-label swap
-  (see `_web_search_provider_label()` immediately below). The literal
-  string "LORA" staying in the source file is correct; it is the pattern
-  being matched, not a value to update by hand.
-- `lora-persona.md` is filtered from RAG results — it is already in the
+  `body.replace("{{ASSISTANT_NAME}}", assistant_name)` at cache-fill time —
+  the exact same mechanism already used for the `LangSearch` →
+  provider-label swap (see `_web_search_provider_label()` immediately
+  below). The literal placeholder `{{ASSISTANT_NAME}}` staying in the
+  source file is correct; it is the pattern being matched, not a value to
+  update by hand. **Updated 2026-08-30 (OSS packaging pass):** this was
+  previously a blunt `body.replace("LORA", assistant_name)` keyed on the
+  literal old product name — replaced with an explicit placeholder token
+  precisely so this substitution no longer depends on a brand string that
+  has no reason to survive an OSS rename; the file itself was renamed from
+  `lora-persona.md` to `persona.md` in the same pass.
+- `persona.md` is filtered from RAG results — it is already in the
   system message and must not appear twice in Slot 4.
 - `_load_persona()` fetches top-3 corpus results and filters by
-  `"lora-persona" in str(d.path)` before accepting any document into
-  Slot 1b. If `lora-persona.md` is not in the top-3 results, persona
+  `str(d.path).endswith("persona.md")` before accepting any document into
+  Slot 1b. If `persona.md` is not in the top-3 results, persona
   is absent for that session and a warning is logged.
 - Persona content is no longer required to stay minimal. It may grow, as plain undifferentiated prose with no internal section headers, to absorb durable, non-instruction-dependent behavioral content (the "static rules" referenced in §3.7a), up to the existing 500-token hard ceiling. No soft checkpoint or review threshold applies below that ceiling.
 
@@ -186,7 +192,7 @@ falls back to its training cutoff — leading it to either refuse tasks
 involving real recent/future-sounding dates as impossible, or to
 second-guess correct tool results (e.g. a real earnings date) as likely
 errors simply because they postdate training. Added 2026-07-17 to close
-this gap; see the persona carve-out in §3.6-adjacent `wiki/lora-persona.md`
+this gap; see the persona carve-out in §3.6-adjacent `wiki/persona.md`
 for the matching trust-hierarchy rule.
 
 **Token ceiling:** None formally enforced — content is fixed-shape
@@ -370,7 +376,7 @@ Source: wiki/WikiAgent Architecture.md
   reflect that in its response rather than presenting a partial summary as complete.
 - Content is truncated at a sentence boundary when possible.
 - The `[CONTEXT]` label is mandatory. Source paths are mandatory.
-- `lora-persona.md` is excluded from RAG results (already in system message).
+- `persona.md` is excluded from RAG results (already in system message).
 
 ---
 
@@ -890,7 +896,7 @@ Both options are **superseded by the single-turn-request finding**, not rejected
 
 This contract is the canonical boundary between cached and per-turn content. It is enforced by an automated test (`tests/test_prompt_builder.py`, `test_pb_e_build_enforces_dynamic_suffix_slot_order`) so that any future change to slot order is a deliberate, reviewed decision rather than a silent regression.
 
-**Stable prefix** (system message, passed as `system=`): Slot 1a (identity) + Slot 1b (persona). Byte-identical for the lifetime of a session once persona is cached by `ControllerAgent._load_persona()` — **updated 2026-08-03:** and unchanged since the last assistant-name change, if any. Slot 1a's name is a user setting (`MemoryManager.get_assistant_name()`, default `"Localist"`, see Slot 1a above), not a true constant; changing it invalidates the persona cache (`ControllerAgent.invalidate_persona_cache()`) and forces a fresh substitution, which is a real full-prefix cache miss on the next request — the same cost class the wiki-page-update case already had, just now user-triggerable directly. No new slot is introduced. "Static rules" is not a separate artifact — it denotes invariant scaffolding that may be written directly into `lora-persona.md` as plain prose, blended with voice and style content, with no internal section headers and no structural separation from the rest of the persona text. Persona may grow to absorb this kind of durable, non-instruction-dependent content, with no soft checkpoint or review threshold below the cap. The only constraint is the existing hard ceiling, `_CEIL_PERSONA = 500` tokens / 2000 chars in `prompt_builder.py`, which is unchanged and still governs KV-cache prefix stability. Current actual persona size: ~476 chars / ~119 tokens (roughly 24% of the cap) — substantial headroom (~381 tokens) exists.
+**Stable prefix** (system message, passed as `system=`): Slot 1a (identity) + Slot 1b (persona). Byte-identical for the lifetime of a session once persona is cached by `ControllerAgent._load_persona()` — **updated 2026-08-03:** and unchanged since the last assistant-name change, if any. Slot 1a's name is a user setting (`MemoryManager.get_assistant_name()`, default `"Localist"`, see Slot 1a above), not a true constant; changing it invalidates the persona cache (`ControllerAgent.invalidate_persona_cache()`) and forces a fresh substitution, which is a real full-prefix cache miss on the next request — the same cost class the wiki-page-update case already had, just now user-triggerable directly. No new slot is introduced. "Static rules" is not a separate artifact — it denotes invariant scaffolding that may be written directly into `persona.md` as plain prose, blended with voice and style content, with no internal section headers and no structural separation from the rest of the persona text. Persona may grow to absorb this kind of durable, non-instruction-dependent content, with no soft checkpoint or review threshold below the cap. The only constraint is the existing hard ceiling, `_CEIL_PERSONA = 500` tokens / 2000 chars in `prompt_builder.py`, which is unchanged and still governs KV-cache prefix stability. Current actual persona size: ~476 chars / ~119 tokens (roughly 24% of the cap) — substantial headroom (~381 tokens) exists.
 
 **Dynamic suffix** (user message): Slot 3a (episodic) → Slot 3b (profile) → Slot 4 (RAG) → Slot 5 (tool results) → Slot 6 (working memory) → Slot 7 (instruction). This order is unchanged from the existing implementation and is preserved deliberately — it reflects conceptual layering (contextualizers → evidence providers → conversation scaffolding → instruction), not cache eligibility. Episodic and profile facts are *not* eligible to move into the stable prefix: profile is re-scored per turn via live cosine similarity; episodic presence is gated by routing path and session state. Freezing either into the prefix would defeat their purpose.
 
@@ -1155,7 +1161,7 @@ call site (~line 1249) — reusing the already-cached persona load from the
 same turn's main-call construction, not a second corpus query. Lever 1
 (persona growth) was folded into this same fix, since a shared prefix only
 has practical cache value if it's long enough to cover a meaningful portion
-of block 0: `lora-persona.md` was grown from ~476 chars (~119 tokens) to
+of block 0: `persona.md` was grown from ~476 chars (~119 tokens) to
 1,951 chars (~487 tokens) — real, previously-authored content (an earlier
 draft of the persona, trimmed back down to fit the existing 500-token
 `_CEIL_PERSONA` ceiling) rather than invented padding. `_SYSTEM` (160 chars
@@ -1171,7 +1177,7 @@ margin into block 1.
   placeholder string):** `_build_wsu_system(actual_persona)` produces output
   whose leading bytes are identical, string-for-string, to
   `PromptBuilder()._slot1_system(actual_persona)` — proven via a dedicated
-  test that reads `wiki/lora-persona.md` from disk, parses it through the
+  test that reads `wiki/persona.md` from disk, parses it through the
   same `parse_wiki_doc().body[:2000]` path `_load_persona()` itself uses,
   and asserts both the byte-identical prefix and the exact suffix shape
   (`"\n\n" + _WSU_TASK_INSTRUCTIONS`, nothing duplicated or mangled at the
@@ -1186,7 +1192,7 @@ margin into block 1.
   oMLX dashboard's Serving Stats) has not yet been done as of this writing
   and is the natural next step before this item can be marked fully closed
   rather than "implemented and unit-verified."
-- **A separate, narrower gap worth naming:** `lora-persona.md`'s on-disk
+- **A separate, narrower gap worth naming:** `persona.md`'s on-disk
   edit required re-indexing into `document_index` for `_load_persona()`
   (which reads via `query_corpus()` from the DB, never from disk directly)
   to actually serve the new content — this was done via direct SQL update
@@ -1234,7 +1240,7 @@ cross-check. The result is negative — documented here in full so it is not mis
 
 1. **Persona content and combined system-message length independently re-confirmed,
    byte-exact, from three separate sources this session:** `cat`'d directly from
-   `wiki/lora-persona.md` (1,951 chars, matching the implementation record above exactly);
+   `wiki/persona.md` (1,951 chars, matching the implementation record above exactly);
    reconstructing `_SYSTEM + "\n\n" + persona` (`_SYSTEM` since renamed to
    `_SYSTEM_TEMPLATE`, 2026-08-03 — see Slot 1a) from this disk content produces exactly
    **2,113 characters**, matching both a real live backend log's own `system_chars=2113`

@@ -1,5 +1,5 @@
 """
-LORA — SQLite MemoryManager
+Localist — SQLite MemoryManager
 ============================
 Persistent, local-first replacement for the in-process MemoryManager
 currently defined in controller_agent.py.
@@ -346,7 +346,7 @@ class GraphEdgeResult:
 
 class MemoryManager:
     """
-    SQLite-backed persistent memory for LORA.
+    SQLite-backed persistent memory for Localist.
 
     Responsibilities
     ----------------

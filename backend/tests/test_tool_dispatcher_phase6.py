@@ -1,5 +1,5 @@
 """
-Phase 6 integration tests — LORA Tool Dispatcher.
+Phase 6 integration tests — Localist Tool Dispatcher.
 
 Originally covered the legacy ToolDispatcher class directly (6.1
 interface, 6.2 web_search, 6.3 file_op) plus 6.4 ControllerAgent wiring.

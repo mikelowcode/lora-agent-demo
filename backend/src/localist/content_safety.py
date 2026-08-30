@@ -1,5 +1,5 @@
 """
-LORA — Content safety scanner for episodic memory writes
+Localist — Content safety scanner for episodic memory writes
 ===========================================================
 Lightweight pattern-based scanner for episodic memory writes.
 

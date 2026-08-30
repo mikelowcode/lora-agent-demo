@@ -1,5 +1,5 @@
 """
-Phase 7 integration tests — LORA full pipeline.
+Phase 7 integration tests — Localist full pipeline.
 
 Covers:
   7.1  — Full conversational pipeline: corpus hit → fetch_rag=True → answer
@@ -159,18 +159,18 @@ class TestFullPipeline:
     def test_7_4_persona_injected_into_system_prompt(self):
         """_load_persona() fetches the persona doc and injects it into system_prompt."""
         persona_doc = MockDoc(
-            path            = "wiki/lora-persona.md",
-            content         = "LORA is a local-first research assistant.",
+            path            = "wiki/persona.md",
+            content         = "Localist is a local-first research assistant.",
             relevance_score = 0.9,
         )
         other_doc = MockDoc(
             path            = "wiki/localist-build-order.md",
-            content         = "Build order content for LORA.",
+            content         = "Build order content for Localist.",
             relevance_score = 0.6,
         )
 
         def query_side_effect(query, **kwargs):
-            # _load_persona fetch: "LORA persona identity research assistant"
+            # _load_persona fetch: "assistant persona identity research"
             if "persona" in query.lower():
                 return [persona_doc]
             # Planner P4 + Step 4 RAG fetch: any other instruction query
@@ -178,7 +178,7 @@ class TestFullPipeline:
 
         mm_mock = MagicMock()
         mm_mock.db_path = None                          # disable episodic hooks
-        mm_mock.get_assistant_name.return_value = "LORA"
+        mm_mock.get_assistant_name.return_value = "Localist"
         mm_mock.query_corpus.side_effect = query_side_effect
         mm_mock.get_context_window.return_value = []
 
@@ -187,38 +187,38 @@ class TestFullPipeline:
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm_mock)
 
         # Explicit wiki keyword → P4 fires → fetch_rag=True → slot 4 populated.
-        ctrl.handle_task({"instruction": "check the wiki for LORA research assistant"})
+        ctrl.handle_task({"instruction": "check the wiki for Localist research assistant"})
 
         system_prompt = conv._received[0].context["_prebuilt_system"]
         user_prompt   = conv._received[0].context["_prebuilt_prompt"]
 
         # Persona content must appear in system_prompt, not as a RAG source
-        assert "LORA is a local-first research assistant." in system_prompt
-        assert "Source: wiki/lora-persona.md" not in user_prompt
+        assert "Localist is a local-first research assistant." in system_prompt
+        assert "Source: wiki/persona.md" not in user_prompt
 
         # The normal RAG source still appears in the user prompt
         assert "Source: wiki/localist-build-order.md" in user_prompt
 
     def test_7_4b_persona_filtered_from_rag_slot(self, caplog):
-        """lora-persona.md is filtered from RAG results; it appears only in system_prompt."""
+        """persona.md is filtered from RAG results; it appears only in system_prompt."""
         persona_doc = MockDoc(
-            path            = "wiki/lora-persona.md",
-            content         = "# LORA Persona\nTest persona content.",
+            path            = "wiki/persona.md",
+            content         = "# Persona\nTest persona content.",
             relevance_score = 0.9,
         )
 
         mm_mock = MagicMock()
         mm_mock.db_path = None                          # disable episodic hooks
-        mm_mock.get_assistant_name.return_value = "LORA"
+        mm_mock.get_assistant_name.return_value = "Localist"
         mm_mock.query_corpus.return_value = [persona_doc]
         mm_mock.get_context_window.return_value = []
 
-        rt   = make_runtime(infer_return="I am LORA.")
-        conv = make_conv_agent(answer="I am LORA.")
+        rt   = make_runtime(infer_return="I am Localist.")
+        conv = make_conv_agent(answer="I am Localist.")
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm_mock)
 
         with caplog.at_level(logging.DEBUG, logger="localist.controller_agent"):
-            result = ctrl.handle_task({"instruction": "check the wiki for LORA research assistant"})
+            result = ctrl.handle_task({"instruction": "check the wiki for Localist research assistant"})
 
         assert result["status"] == "complete"
         messages = [r.getMessage() for r in caplog.records]
@@ -228,11 +228,11 @@ class TestFullPipeline:
             if "assembled user_prompt:" in m
         )
         # Persona doc must not appear in the user message (it's in system_prompt via _load_persona)
-        assert user_prompt.count("wiki/lora-persona.md") == 0
+        assert user_prompt.count("wiki/persona.md") == 0
 
         # Persona content is in the system prompt
         system_prompt = conv._received[0].context["_prebuilt_system"]
-        assert "LORA Persona" in system_prompt
+        assert "# Persona" in system_prompt
 
     def test_7_6_prompt_logging_emitted(self, mm, caplog):
         """assembled system_prompt and user_prompt are logged at DEBUG."""

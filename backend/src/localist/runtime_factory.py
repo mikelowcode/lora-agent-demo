@@ -1,5 +1,5 @@
 """
-LORA — RuntimeFactory
+Localist — RuntimeFactory
 ======================
 A single entry point that constructs the correct runtime client based on
 a backend identifier string.

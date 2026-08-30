@@ -1,5 +1,5 @@
 """
-LORA — Controller Agent
+Localist — Controller Agent
 =======================
 The central coordinator of the multi-agent reasoning system.
 
@@ -101,7 +101,7 @@ _WEB_SEARCH_PROVIDER_LABELS: dict[str, str] = {
 def _web_search_provider_label() -> str:
     """
     Resolve SEARCH_PROVIDER to the display name substituted into the
-    persona's "Web search" tool description (wiki/lora-persona.md).
+    persona's "Web search" tool description (wiki/persona.md).
 
     Raises ValueError("ERROR: unknown SEARCH_PROVIDER <value>") for an
     unrecognized value — same fail-loud contract as
@@ -851,7 +851,7 @@ class ControllerAgent:
 
     def _load_persona(self) -> str | None:
         """
-        Load the LORA persona document from the wiki corpus.
+        Load the persona document from the wiki corpus.
         Result is cached in self._persona_cache after first successful load.
         Returns None when MemoryManager is absent or corpus has no persona doc.
 
@@ -859,9 +859,10 @@ class ControllerAgent:
         name (e.g. "It returns real results from LangSearch."); that literal
         substring is swapped for the SEARCH_PROVIDER-derived label once here,
         at cache time, rather than baked into the static wiki doc — see
-        _web_search_provider_label(). Likewise, the persona's "You are LORA"
-        line is swapped for the current MemoryManager.get_assistant_name()
-        value — same mechanism, same call site.  An unrecognized
+        _web_search_provider_label(). Likewise, the persona's "You are
+        {{ASSISTANT_NAME}}" line is swapped for the current
+        MemoryManager.get_assistant_name() value — same mechanism, same call
+        site.  An unrecognized
         SEARCH_PROVIDER raises before the corpus fetch below, so it
         propagates as a real error instead of being caught by the broad
         except clause and silently downgrading to "proceeding without
@@ -890,20 +891,20 @@ class ControllerAgent:
         provider_label = _web_search_provider_label()
         try:
             docs = self._memory_manager.query_corpus(
-                "LORA persona identity research assistant",
+                "assistant persona identity research",
                 max_results    = 3,
                 use_embeddings = True,
             )
             # Filter to the persona document by filename — never load a
             # different wiki doc into the persona slot.
             persona_doc = next(
-                (d for d in docs if "lora-persona" in str(d.path)), None
+                (d for d in docs if str(d.path).endswith("persona.md")), None
             )
             if persona_doc is not None:
                 parsed = parse_wiki_doc(persona_doc.content)
                 body = parsed.body[:2000]
                 body = body.replace("LangSearch", provider_label)
-                self._persona_cache = body.replace("LORA", assistant_name)
+                self._persona_cache = body.replace("{{ASSISTANT_NAME}}", assistant_name)
                 self._persona_cache_name = assistant_name
                 logger.debug(
                     "_load_persona: persona loaded and cached — "
@@ -916,7 +917,7 @@ class ControllerAgent:
                 )
             else:
                 logger.warning(
-                    "_load_persona: lora-persona not found in top-3 "
+                    "_load_persona: persona.md not found in top-3 "
                     "corpus results — proceeding without persona."
                 )
         except Exception as exc:
@@ -1496,7 +1497,7 @@ class ControllerAgent:
                     )
                     for doc in _fallback_docs
                     if (not doc.scored_by_embedding or doc.relevance_score >= 0.55)
-                    and not str(doc.path).endswith("lora-persona.md")
+                    and not str(doc.path).endswith("persona.md")
                 ]
                 if rag_sources:
                     logger.info(
@@ -1546,7 +1547,7 @@ class ControllerAgent:
                     )
                     for doc in docs
                     if (not doc.scored_by_embedding or doc.relevance_score >= 0.55)
-                    and not str(doc.path).endswith("lora-persona.md")
+                    and not str(doc.path).endswith("persona.md")
                 ]
                 logger.info(
                     "_execute_plan: RAG fetch complete — %d source(s).",

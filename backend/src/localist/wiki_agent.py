@@ -1,5 +1,5 @@
 """
-LORA — WikiAgent
+Localist — WikiAgent
 ================
 Self-contained wiki ingestion agent.  Owns all logic directly.
 

@@ -1,4 +1,4 @@
-# LORA Wiki Schema
+# Localist Wiki Schema
 
 This file defines the structure and conventions for wiki pages in this knowledge base.
 Front matter follows Google's OKF (Open Knowledge Framework) convention, as adopted by
