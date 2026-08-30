@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-import hacker_news
+from localist import hacker_news
 
 
 def _top_stories_response(ids: list[int], status_code: int = 200) -> httpx.Response:

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localist"
+version = "0.1.0"
+description = "Localist Framework — a local-first, agentic general assistant"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic-settings>=2.2.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "pydantic>=2.7.0",
+    "python-multipart==0.0.32",
+    "PyYAML>=6.0",
+    "lxml>=6.1.1",
+    "readability-lxml>=0.8.4.1",
+    "chardet>=7.4.3",
+    "cssselect>=1.4.0",
+    "httpx>=0.28.1",
+    "mcp>=1.28.1",
+    "psutil>=7.0.0",
+]
+
+[project.optional-dependencies]
+# Local embedding inference (EmbeddingGemma via MLX). Apple Silicon only —
+# see backend/src/localist/embedding_engine.py's is_apple_silicon gate.
+# mlx-embeddings is GPLv3 (see THIRD_PARTY_LICENSES.md) — kept as a
+# separately-installed, non-bundled optional extra.
+mlx = [
+    "mlx-embeddings>=0.1.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# Local OCR service (ocr_extract MCP tool) — Apple Vision framework for
+# images, PyMuPDF for PDFs. Apple Silicon only — see
+# backend/src/localist/mcp_server/ocr.py's is_apple_silicon() gate. PyMuPDF
+# is AGPL-3.0-or-commercial (see THIRD_PARTY_LICENSES.md) — flagged for
+# replacement, not yet done.
+ocr = [
+    "pyobjc-framework-Vision>=10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "pyobjc-framework-Quartz>=10.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "PyMuPDF>=1.24.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# generate_chart MCP tool (server-side PNG rendering). Cross-platform;
+# matplotlib is imported lazily inside generate_chart() so its absence
+# only affects that one tool, not the rest of the MCP server.
+chart = [
+    "matplotlib>=3.9.0",
+]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

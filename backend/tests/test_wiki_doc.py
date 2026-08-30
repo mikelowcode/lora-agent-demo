@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from wiki_doc import WikiLink, ParsedWikiDoc, META_WIKI_FILENAMES, parse_wiki_doc, load_wiki_doc
+from localist.wiki_doc import WikiLink, ParsedWikiDoc, META_WIKI_FILENAMES, parse_wiki_doc, load_wiki_doc
 
 
 # ---------------------------------------------------------------------------

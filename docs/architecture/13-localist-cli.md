@@ -18,27 +18,38 @@ existing engine-agnostic design principle (§1).
 
 ### 13.2 Service Launch
 
-Backend and `localist-mcp` both run from `cwd = backend/` — required for
-import resolution (`main:app` and `mcp_server.main:app`). The frontend
-runs from `localist-ui/` via a subshell, so it doesn't disturb that shared
-`cwd`.
+**Updated 2026-08-30:** `backend/` was restructured into a real installable
+`localist` package (`backend/pyproject.toml`, `src/localist/` layout,
+`pip install -e .`) as part of OSS-release packaging work — see
+`THIRD_PARTY_LICENSES.md` and the package's own extras (`[mlx]`/`[ocr]`/
+`[chart]`/`[dev]`). Uvicorn targets are now package-qualified —
+`localist.main:app` and `localist.mcp_server.main:app` — and resolve from
+any `cwd` because the editable install puts `backend/src` on the venv's
+`sys.path`, not because of `cwd`. The script still `cd`s into `backend/`
+before launch, but only for log-path and `--reload-dir`/`--reload-exclude`
+path convenience now, not for import resolution.
+
+The frontend runs from `localist-ui/` via a subshell, so it doesn't disturb
+that shared `cwd`.
 
 Preflight checks confirm `backend/.venv/bin/python` and
 `localist-ui/node_modules` exist before launch, failing fast with a
-remediation command if either is missing.
+remediation command if either is missing (`pip install -e ".[dev]"`, not
+the old `pip install -r requirements.txt` — `requirements.txt` is retired).
 
 ### 13.3 Reload Directory Scoping
 
-Backend's uvicorn invocation passes `--reload-exclude 'mcp_server/*'`;
-`localist-mcp`'s passes `--reload-dir mcp_server`. Effect: editing backend
-code reloads only the backend process; editing `backend/mcp_server/*.py`
-reloads only the `localist-mcp` process. Both processes still resolve
-imports from `cwd = backend/` — only the reload-watch scope is separated.
+Backend's uvicorn invocation passes `--reload-exclude
+'src/localist/mcp_server/*'`; `localist-mcp`'s passes `--reload-dir
+src/localist/mcp_server` (both paths updated 2026-08-30 for the `src/`
+layout move, same effect as before). Effect: editing backend code reloads
+only the backend process; editing `backend/src/localist/mcp_server/*.py`
+reloads only the `localist-mcp` process.
 
 Design constraint to revisit if it becomes relevant: the current glob-based
 exclude only matches direct children of `mcp_server/`, not deeper nested
-paths. If `backend/mcp_server/` grows subpackages, this scoping will need
-to be revisited.
+paths. If `backend/src/localist/mcp_server/` grows subpackages, this
+scoping will need to be revisited.
 
 ### 13.4 Port Configuration
 

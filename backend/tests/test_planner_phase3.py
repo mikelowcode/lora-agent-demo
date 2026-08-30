@@ -20,10 +20,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-import session_files
-from memory_manager import MemoryManager
-from planner import Planner, RoutingPlan, extract_graph_query, resolve_graph_target, _has_explicit_remember_signal
-from controller_agent import (
+from localist import session_files
+from localist.memory_manager import MemoryManager
+from localist.planner import Planner, RoutingPlan, extract_graph_query, resolve_graph_target, _has_explicit_remember_signal
+from localist.controller_agent import (
     ControllerAgent, Task, TaskStatus, SubTask, AgentResult
 )
 
@@ -730,7 +730,7 @@ class TestGraphNameResolution:
     def test_tier2_skipped_too_few_tokens(self):
         result = resolve_graph_target("the overview", _TEST_STEMS)
         # Confirm the token count before the skip:
-        from planner import _normalize_graph_text, _GRAPH_STOPWORDS
+        from localist.planner import _normalize_graph_text, _GRAPH_STOPWORDS
         normalized = _normalize_graph_text("the overview")
         meaningful = set(normalized.split("-")) - _GRAPH_STOPWORDS
         assert len(meaningful) < 2, (
@@ -893,7 +893,7 @@ class TestPlannerP3News:
     #    _WEB_SEARCH_KEYWORDS into _NEWS_KEYWORDS — see planner.py's
     #    2026-07-22 comment above _WEB_SEARCH_KEYWORDS).
     def test_news_word_not_in_web_search_keywords(self):
-        from planner import _WEB_SEARCH_KEYWORDS, _NEWS_KEYWORDS
+        from localist.planner import _WEB_SEARCH_KEYWORDS, _NEWS_KEYWORDS
         assert "news" not in _WEB_SEARCH_KEYWORDS
         assert "news" in _NEWS_KEYWORDS
 
@@ -1473,7 +1473,7 @@ class TestSemanticSearchIntent:
         similarity of 1.0 with every template, so the returned score ≈ 1.0.
         The returned group must be one of the known template groups.
         """
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         fixed_vec = _unit_vector(8)
         embed_fn = MagicMock(return_value=fixed_vec)
         p = Planner(runtime=make_runtime(), embed_fn=embed_fn)
@@ -1503,7 +1503,7 @@ class TestSemanticSearchIntent:
         """
         call_count = {"n": 0}
         template_total = sum(
-            len(v) for v in __import__("planner")._SEARCH_INTENT_TEMPLATES.values()
+            len(v) for v in __import__("localist.planner", fromlist=["_SEARCH_INTENT_TEMPLATES"])._SEARCH_INTENT_TEMPLATES.values()
         )
 
         def embed_fn_that_fails_later(text: str) -> list[float]:
@@ -1646,7 +1646,7 @@ class TestTunedEmbeddingModelGuard:
         return Planner(runtime=make_runtime(), embed_fn=embed_fn, **kwargs)
 
     def test_mismatched_model_disables_semantic_gating(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="planner"):
+        with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="nomic-embed-text")
 
         assert p._semantic_gating_disabled is True
@@ -1657,9 +1657,9 @@ class TestTunedEmbeddingModelGuard:
         assert result is None
 
     def test_matching_model_name_unaffected(self, caplog):
-        from planner import _TUNED_EMBEDDING_MODEL
+        from localist.planner import _TUNED_EMBEDDING_MODEL
 
-        with caplog.at_level(logging.WARNING, logger="planner"):
+        with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name=_TUNED_EMBEDDING_MODEL)
 
         assert p._semantic_gating_disabled is False
@@ -1673,7 +1673,7 @@ class TestTunedEmbeddingModelGuard:
     def test_none_model_name_unaffected_no_warning(self, caplog):
         """embedding_model_name=None (keyword-only / no embedding source
         configured) is not a mismatch — no warning, gating untouched."""
-        with caplog.at_level(logging.WARNING, logger="planner"):
+        with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name=None)
 
         assert p._semantic_gating_disabled is False
@@ -1688,7 +1688,7 @@ class TestSemanticSearchIntentDiag2:
 
     def test_all_group_scores_contains_exactly_five_expected_keys(self):
         """all_group_scores must contain exactly the five template-group keys."""
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         expected_keys = set(_SEARCH_INTENT_TEMPLATES.keys())
         assert expected_keys == {
             "explicit_search_action",
@@ -1719,7 +1719,7 @@ class TestSemanticSearchIntentDiag2:
         Then we patch _template_embeddings directly to give two groups
         different representative vectors and confirm per-group reporting.
         """
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
 
         # Build a planner with any embed_fn to get past __init__ validation.
         fixed_vec = _unit_vector(8)
@@ -1933,7 +1933,7 @@ class TestPriority3SemanticGating:
         change: old test asserted the removed templates; updated to assert the new Set 1
         templates that replaced them).
         """
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         templates = _SEARCH_INTENT_TEMPLATES["lookup_request"]
         for expected in (
             "can you look up the release date for this",
@@ -1945,7 +1945,7 @@ class TestPriority3SemanticGating:
 
     def test_old_2026_06_25_lookup_request_templates_removed(self):
         """The 4 collision-prone templates added 2026-06-25 were removed 2026-06-28."""
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         templates = _SEARCH_INTENT_TEMPLATES["lookup_request"]
         for removed in (
             "can you look up",
@@ -1957,7 +1957,7 @@ class TestPriority3SemanticGating:
 
     def test_original_lookup_request_templates_unchanged(self):
         """Regression guard: original five lookup_request templates are present and unmodified."""
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         templates = _SEARCH_INTENT_TEMPLATES["lookup_request"]
         for expected in (
             "look up this",
@@ -1974,7 +1974,7 @@ class TestPriority3SemanticGating:
         explicit_search_action raised 0.68 → 0.72 on 2026-06-28 per
         explicit_search_action_margin_assessment_2026-06-28.md (pass→fail change:
         old assertion was 0.68; updated to 0.72 after the threshold raise)."""
-        from planner import _SEMANTIC_GATE_THRESHOLDS
+        from localist.planner import _SEMANTIC_GATE_THRESHOLDS
         assert _SEMANTIC_GATE_THRESHOLDS == {
             "explicit_search_action": 0.72,
             "lookup_request": 0.60,
@@ -2005,7 +2005,7 @@ class TestPriority3SemanticGating:
 
     def test_other_template_groups_unmodified(self):
         """Regression guard: explicit_search_action, knowledge_request_open, freshness_request are unchanged."""
-        from planner import _SEARCH_INTENT_TEMPLATES
+        from localist.planner import _SEARCH_INTENT_TEMPLATES
         assert _SEARCH_INTENT_TEMPLATES["explicit_search_action"] == (
             "search the web for this",
             "do a web search for this",
@@ -2323,22 +2323,22 @@ class TestGreetingFalsePositiveFilter:
 
     def test_hey_lora_in_negative_filter(self):
         """'hey lora' is a member of _SEARCH_NEGATIVE_FILTER (2026-06-27 addition)."""
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "hey lora" in _SEARCH_NEGATIVE_FILTER
 
     def test_hi_there_in_negative_filter(self):
         """'hi there' is a member of _SEARCH_NEGATIVE_FILTER (2026-06-27 addition)."""
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "hi there" in _SEARCH_NEGATIVE_FILTER
 
     def test_hey_there_in_negative_filter(self):
         """'hey there' is a member of _SEARCH_NEGATIVE_FILTER (2026-06-27 addition)."""
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "hey there" in _SEARCH_NEGATIVE_FILTER
 
     def test_whats_up_in_negative_filter(self):
         """"what's up" is a member of _SEARCH_NEGATIVE_FILTER (2026-06-27 addition)."""
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "what's up" in _SEARCH_NEGATIVE_FILTER
 
     # ------------------------------------------------------------------
@@ -2442,7 +2442,7 @@ class TestGreetingFalsePositiveFilter:
         If you are reading this because you want to add 'hi' to the filter:
         resolve the collision risk in the §10.4 open item first.
         """
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "hi" not in _SEARCH_NEGATIVE_FILTER
 
         # Not intercepted → reaches the embedding path.
@@ -2469,7 +2469,7 @@ class TestGreetingFalsePositiveFilter:
         If you are reading this because you want to add 'hey' to the filter:
         resolve the collision risk in the §10.4 open item first.
         """
-        from planner import _SEARCH_NEGATIVE_FILTER
+        from localist.planner import _SEARCH_NEGATIVE_FILTER
         assert "hey" not in _SEARCH_NEGATIVE_FILTER
 
         p = self._make_planner_with_embed()

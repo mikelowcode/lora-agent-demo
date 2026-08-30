@@ -3,7 +3,7 @@ Tests for bm25.py — the hand-rolled Okapi BM25 scorer that replaces Jaccard
 keyword-overlap scoring as stage 1 of MemoryManager.query_corpus().
 """
 
-import bm25
+from localist import bm25
 
 
 class TestTokenize:

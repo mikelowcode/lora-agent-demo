@@ -54,7 +54,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mcp_tool_dispatcher import (
+from localist.mcp_tool_dispatcher import (
     MCPToolDispatcher,
     _CHART_RETRY_TEMPERATURE,
     _ENRICH_EXCERPT_CHARS,
@@ -64,7 +64,7 @@ from mcp_tool_dispatcher import (
     _RESEARCH_GATE_SYSTEM_PROMPT,
     _RESEARCH_REFORMULATE_SYSTEM_PROMPT,
 )
-from prompt_builder import ToolResult
+from localist.prompt_builder import ToolResult
 
 # Sentinel session object handed back by the mocked _open_session below.
 # Never actually used to send protocol messages — _call_mcp_tool itself is

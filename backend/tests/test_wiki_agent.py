@@ -22,8 +22,8 @@ import pytest
 
 from unittest.mock import patch
 
-import wiki_maintenance_log
-from wiki_agent import (
+from localist import wiki_maintenance_log
+from localist.wiki_agent import (
     Actions,
     ApplyDiff,
     CreatePage,
@@ -36,7 +36,7 @@ from wiki_agent import (
     parse_model_xml,
     sweep_expired_snapshots,
 )
-from controller_agent import SubTask, TaskStatus
+from localist.controller_agent import SubTask, TaskStatus
 
 
 @pytest.fixture(autouse=True)
@@ -394,7 +394,7 @@ def test_run_unresolved_links_in_output_and_logged(tmp_path: Path, caplog):
         "auto_apply":   False,
     }
 
-    with caplog.at_level(logging.WARNING, logger="wiki_agent"):
+    with caplog.at_level(logging.WARNING, logger="localist.wiki_agent"):
         result = agent.run(subtask)
 
     assert result.status == TaskStatus.COMPLETE
@@ -724,7 +724,7 @@ def test_diff_only_run_discards_create_page_actions(tmp_path: Path, caplog):
         "auto_apply":    True,
     }
 
-    with caplog.at_level(logging.WARNING, logger="wiki_agent"):
+    with caplog.at_level(logging.WARNING, logger="localist.wiki_agent"):
         result = agent.run(subtask)
 
     assert result.status == TaskStatus.COMPLETE
@@ -1164,7 +1164,7 @@ def test_snapshot_page_non_fatal_when_source_page_missing(tmp_path: Path, caplog
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
 
-    with caplog.at_level(logging.WARNING, logger="wiki_agent"):
+    with caplog.at_level(logging.WARNING, logger="localist.wiki_agent"):
         WikiAgent._snapshot_page("nonexistent-page", wiki_dir)
 
     assert "Snapshot failed" in caplog.text
@@ -1334,7 +1334,7 @@ def test_snapshot_page_logs_success_at_info_level(tmp_path: Path, caplog):
     wiki_dir.mkdir()
     (wiki_dir / "existing-page.md").write_text(_PAGE_CONTENT, encoding="utf-8")
 
-    with caplog.at_level(logging.INFO, logger="wiki_agent"):
+    with caplog.at_level(logging.INFO, logger="localist.wiki_agent"):
         WikiAgent._snapshot_page("existing-page", wiki_dir)
 
     assert "Snapshotted 'existing-page'" in caplog.text
@@ -1532,8 +1532,8 @@ def test_end_to_end_diff_only_run_regenerates_index_and_logs(tmp_path: Path):
 # so ingestion behaves identically across oMLX/Ollama/Foundry.)
 # ---------------------------------------------------------------------------
 
-import wiki_agent as wiki_agent_module
-from prompt_builder import ToolResult
+from localist import wiki_agent as wiki_agent_module
+from localist.prompt_builder import ToolResult
 
 
 class _RuntimeWithInferWithFile(_CapturingFakeRuntime):

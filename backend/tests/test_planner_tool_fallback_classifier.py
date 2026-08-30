@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from planner import Planner, RoutingPlan
+from localist.planner import Planner, RoutingPlan
 
 _ENV_VAR = "LOCALIST_TOOL_FALLBACK_CLASSIFIER"
 

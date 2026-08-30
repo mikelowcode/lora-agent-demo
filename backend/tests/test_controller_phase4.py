@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from controller_agent import (
+from localist.controller_agent import (
     ControllerAgent,
     Task,
     TaskStatus,
@@ -40,18 +40,18 @@ from controller_agent import (
     _file_op_confirmation_line,
     _strip_false_tool_attribution,
 )
-from memory_manager import (
+from localist.memory_manager import (
     MemoryManager,
     EpisodicMemoryWriter,
     EpisodicMemoryReader,
     EpisodeRecord,
     GraphEdgeResult,
 )
-from episodic_extractor import ExtractionResult
-from planner import RoutingPlan
-from prompt_builder import PromptBuilder, WorkingMemoryState, ToolResult as _ToolResult
-from conversational_agent import _EMPTY_RESPONSE_FALLBACK
-from wiki_doc import load_wiki_doc, ParsedWikiDoc
+from localist.episodic_extractor import ExtractionResult
+from localist.planner import RoutingPlan
+from localist.prompt_builder import PromptBuilder, WorkingMemoryState, ToolResult as _ToolResult
+from localist.conversational_agent import _EMPTY_RESPONSE_FALLBACK
+from localist.wiki_doc import load_wiki_doc, ParsedWikiDoc
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ class TestCurrentDatetimeSlot:
         fresh per turn, not cached across the ControllerAgent's process
         lifetime the way _load_persona() deliberately is.
         """
-        import controller_agent as controller_agent_module
+        from localist import controller_agent as controller_agent_module
         from datetime import datetime, timezone
 
         rt   = make_runtime(infer_return="no")
@@ -283,7 +283,7 @@ class TestEmptyCompletionGuard:
         mock_dispatcher.dispatch.return_value = [self._tool_result()]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "Look up TSM's July 16 2026 earnings and report back a summary."}
             )
@@ -308,7 +308,7 @@ class TestEmptyCompletionGuard:
         mock_dispatcher.dispatch.return_value = [self._tool_result()]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "Look up TSM's July 16 2026 earnings and report back a summary."}
             )
@@ -330,7 +330,7 @@ class TestEmptyCompletionGuard:
         mock_dispatcher.dispatch.side_effect = RuntimeError("MCP session failed")
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "Look up TSM's July 16 2026 earnings and report back a summary."}
             )
@@ -348,7 +348,7 @@ class TestEmptyCompletionGuard:
         mock_dispatcher.dispatch.return_value = [self._tool_result()]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task({"instruction": "What is 2+2?"})
 
         assert result["answer"] == "Direct answer, no retry needed."
@@ -374,7 +374,7 @@ class TestEmptyCompletionGuard:
         mock_dispatcher.dispatch.return_value = [self._tool_result()]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             ctrl.handle_task({
                 "instruction": "Look up TSM's July 16 2026 earnings and report back a summary.",
                 "task_id":     "mem-write-once-test",
@@ -456,7 +456,7 @@ class TestWebSearchProviderStep3bCorpusFallback:
         mock_dispatcher.dispatch.return_value = [self._failed_result(tool_name)]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             ctrl.handle_task({
                 "instruction": "do a web search for Zylophonic quarterly earnings update",
             })
@@ -788,7 +788,7 @@ class TestPinnedDiffToolContextWiring:
 
         ctrl = ControllerAgent(runtime=rt, agents=[wiki], memory_manager=mm)
         with patch.object(ctrl._planner, "route", return_value=self._compound_plan()), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             ctrl.handle_task({
                 "instruction": "fetch this url https://example.com/changelog and update page to reflect it",
             })
@@ -821,7 +821,7 @@ class TestPinnedDiffToolContextWiring:
 
         ctrl = ControllerAgent(runtime=rt, agents=[wiki], memory_manager=mm)
         with patch.object(ctrl._planner, "route", return_value=self._compound_plan()), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             ctrl.handle_task({
                 "instruction": "fetch this url https://example.com/changelog and update page to reflect it",
             })
@@ -961,7 +961,7 @@ class TestRecencyCache:
         # the cache as a side effect, defeating the point of this test.
         with patch.object(ctrl._planner, "route", return_value=plan), \
              patch.object(EpisodicMemoryReader, "by_recency", return_value=[]) as by_recency_mock, \
-             patch("controller_agent.process_implicit_extraction", return_value=None):
+             patch("localist.controller_agent.process_implicit_extraction", return_value=None):
             ctrl.handle_task({"instruction": "What are my preferences?"})
             ctrl.handle_task({"instruction": "Remind me of my preferences again."})
 
@@ -988,9 +988,9 @@ class TestRecencyCache:
         ), patch.object(
             EpisodicMemoryReader, "by_recency", return_value=[],
         ) as by_recency_mock, patch(
-            "controller_agent.process_explicit_signal", return_value=extraction,
+            "localist.controller_agent.process_explicit_signal", return_value=extraction,
         ), patch(
-            "controller_agent.process_implicit_extraction", return_value=None,
+            "localist.controller_agent.process_implicit_extraction", return_value=None,
         ):
             ctrl.handle_task({"instruction": "What are my preferences?"})
             ctrl.handle_task({"instruction": "remember that I prefer step-by-step instructions"})
@@ -1360,7 +1360,7 @@ class TestToolStubPath:
             raise ConnectionError("mock: localist-mcp unreachable")
 
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session_unreachable,
         ):
             ctrl.handle_task({"instruction": "What are the latest oMLX changes?"})
@@ -1419,7 +1419,7 @@ class TestChartArtifactMetadata:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "chart this: apples 5, oranges 3"}
             )
@@ -1488,7 +1488,7 @@ class TestWorkflowStepsMetadata:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "what does the basic plan cost"}
             )
@@ -1545,7 +1545,7 @@ class TestWorkflowStepsMetadata:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task({"instruction": "tell me about zebras"})
 
         assert "workflow_id" not in result["metadata"]
@@ -1644,7 +1644,7 @@ class TestFalseToolAttributionIntegration:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "chart this: apples 5, oranges 3"}
             )
@@ -1807,7 +1807,7 @@ class TestDeferredFileOpDispatch:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "write a haiku about the sea and save it as haiku.md"}
             )
@@ -1845,7 +1845,7 @@ class TestDeferredFileOpDispatch:
         ]
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "write a haiku and save it as ../../etc/passwd"}
             )
@@ -1865,7 +1865,7 @@ class TestDeferredFileOpDispatch:
         mock_dispatcher.dispatch.side_effect = RuntimeError("localist-mcp unreachable")
 
         with patch.object(ctrl._planner, "route", return_value=plan), \
-             patch("controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
+             patch("localist.controller_agent.MCPToolDispatcher", return_value=mock_dispatcher):
             result = ctrl.handle_task(
                 {"instruction": "write a haiku about the sea and save it as haiku.md"}
             )
@@ -1883,7 +1883,7 @@ class TestPrebuiltPromptPassthrough:
     def test_prebuilt_path_skips_internal_rag(self):
         """When _prebuilt_prompt is present, ConversationalAgent skips
         its own corpus query and uses the prebuilt prompt verbatim."""
-        from conversational_agent import ConversationalAgent
+        from localist.conversational_agent import ConversationalAgent
 
         mm = MagicMock()   # mock MM — must NOT be called for query_corpus
         rt = MagicMock()
@@ -1907,7 +1907,7 @@ class TestPrebuiltPromptPassthrough:
         mm.query_corpus.assert_not_called()
 
     def test_without_prebuilt_normal_path_runs(self):
-        from conversational_agent import ConversationalAgent
+        from localist.conversational_agent import ConversationalAgent
 
         rt = MagicMock()
         rt.infer.return_value = "Normal answer."
@@ -2130,7 +2130,7 @@ class TestLoadUserProfileWikiDoc:
 
         ctrl = self._make_ctrl_with_embed()
         with patch("pathlib.Path.exists", return_value=True), \
-             patch("controller_agent.load_wiki_doc",
+             patch("localist.controller_agent.load_wiki_doc",
                    side_effect=lambda _: load_wiki_doc(profile_file)):
             ctrl._load_user_profile()
 
@@ -2155,7 +2155,7 @@ class TestLoadUserProfileWikiDoc:
 
         ctrl = self._make_ctrl_with_embed()
         with patch("pathlib.Path.exists", return_value=True), \
-             patch("controller_agent.load_wiki_doc",
+             patch("localist.controller_agent.load_wiki_doc",
                    side_effect=lambda _: load_wiki_doc(profile_file)):
             ctrl._load_user_profile()
 

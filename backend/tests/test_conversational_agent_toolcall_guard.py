@@ -19,12 +19,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from conversational_agent import (
+from localist.conversational_agent import (
     ConversationalAgent,
     _is_fabricated_toolcall,
     _SEARCH_UNAVAILABLE_FALLBACK,
 )
-from controller_agent import AgentResult, SubTask, TaskStatus
+from localist.controller_agent import AgentResult, SubTask, TaskStatus
 
 
 # ---------------------------------------------------------------------------

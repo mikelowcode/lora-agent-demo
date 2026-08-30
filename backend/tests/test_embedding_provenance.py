@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from memory_manager import (
+from localist.memory_manager import (
     MemoryManager,
     _pack_embedding,
     _unpack_embedding,
@@ -123,7 +123,7 @@ def _cache_valid_count(path: Path) -> int:
 class TestFreshDatabaseNoProvenance:
     def test_no_provenance_row_created_when_no_data_exists(self, tmp_path, caplog):
         path = tmp_path / "fresh.db"
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             MemoryManager(db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED)
 
         assert _get_provenance(path, "corpus") is None
@@ -136,7 +136,7 @@ class TestFreshDatabaseNoProvenance:
         mm = MemoryManager(db_path=path, embed_fn=embed_fn, embedding_model_name=_TUNED)
         assert _get_provenance(path, "corpus") is None
 
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             mm.index_document(
                 path=tmp_path / "doc.md", doc_type="wiki", content="hello world", embed=True,
             )
@@ -157,7 +157,7 @@ class TestMigrationSeeding:
         _insert_document(path, name="old-doc", embedded=True)
         assert _get_provenance(path, "corpus") is None
 
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             mm = MemoryManager(
                 db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED,
             )
@@ -173,7 +173,7 @@ class TestMigrationSeeding:
         assert _get_provenance(path, "episodes") is None
 
         embed_fn = _stub_embed_fn()
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             MemoryManager(db_path=path, embed_fn=embed_fn, embedding_model_name=_TUNED)
 
         assert _get_provenance(path, "episodes") == _TUNED
@@ -249,7 +249,7 @@ class TestGenuineCorpusMismatch:
         _insert_document(path, name="doc", embedded=True)
         _set_provenance(path, "corpus", _OTHER)
 
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             mm = MemoryManager(
                 db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED,
             )
@@ -307,7 +307,7 @@ class TestGenuineEpisodesMismatch:
         _set_provenance(path, "episodes", _OTHER)
 
         embed_fn = _stub_embed_fn(vector_value=0.9)
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             MemoryManager(db_path=path, embed_fn=embed_fn, embedding_model_name=_TUNED)
 
         assert "episodes embeddings were produced by" in caplog.text

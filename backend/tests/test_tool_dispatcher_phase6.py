@@ -36,9 +36,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from controller_agent import ControllerAgent, TaskStatus, AgentResult
-from mcp_tool_dispatcher import MCPToolDispatcher
-from memory_manager import MemoryManager
+from localist.controller_agent import ControllerAgent, TaskStatus, AgentResult
+from localist.mcp_tool_dispatcher import MCPToolDispatcher
+from localist.memory_manager import MemoryManager
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ def localist_mcp_server(tmp_path: Path):
            "LOCALIST_LOG_LEVEL": "WARNING"}
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "mcp_server.main:app",
+        [sys.executable, "-m", "uvicorn", "localist.mcp_server.main:app",
          "--host", "127.0.0.1", "--port", str(port)],
         cwd     = str(backend_dir),
         env     = env,
@@ -161,7 +161,7 @@ def localist_mcp_server_no_langsearch_key(tmp_path: Path):
     env["OLLAMA_API_KEY"]     = ""
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "mcp_server.main:app",
+        [sys.executable, "-m", "uvicorn", "localist.mcp_server.main:app",
          "--host", "127.0.0.1", "--port", str(port)],
         cwd     = str(backend_dir),
         env     = env,
@@ -265,10 +265,10 @@ class TestControllerToolIntegration:
         conv = make_conv_agent("Here is what I found.")
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session,
         ), patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
             side_effect=fake_call_mcp_tool,
         ):
             ctrl.handle_task({
@@ -308,10 +308,10 @@ class TestControllerToolIntegration:
         conv = make_conv_agent()
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session,
         ), patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
             side_effect=fake_call_mcp_tool,
         ):
             ctrl.handle_task({
@@ -348,10 +348,10 @@ class TestControllerToolIntegration:
         conv = make_conv_agent()
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session,
         ), patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
             side_effect=fake_call_mcp_tool,
         ):
             ctrl.handle_task({
@@ -391,7 +391,7 @@ class TestControllerToolIntegration:
         conv = make_conv_agent("Graceful answer.")
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session_unreachable,
         ):
             result = ctrl.handle_task({
@@ -420,7 +420,7 @@ class TestControllerToolIntegration:
         conv = make_conv_agent()
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session_unreachable,
         ):
             ctrl.handle_task({
@@ -483,7 +483,7 @@ class TestControllerToolIntegration:
         ctrl = ControllerAgent(
             runtime=rt, agents=[conv], memory_manager=mm
         )
-        with patch("mcp_tool_dispatcher._MCP_SERVER_URL", localist_mcp_server + "/sse"):
+        with patch("localist.mcp_tool_dispatcher._MCP_SERVER_URL", localist_mcp_server + "/sse"):
             ctrl.handle_task({
                 "instruction": "read the file notes.md",
                 "context": {
@@ -538,7 +538,7 @@ class TestControllerToolIntegration:
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
 
         with patch(
-            "mcp_tool_dispatcher._MCP_SERVER_URL",
+            "localist.mcp_tool_dispatcher._MCP_SERVER_URL",
             localist_mcp_server_no_langsearch_key + "/sse",
         ):
             ctrl.handle_task({
@@ -602,10 +602,10 @@ class TestControllerToolIntegration:
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
 
         with patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._open_session",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._open_session",
             side_effect=fake_open_session,
         ), patch(
-            "mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
+            "localist.mcp_tool_dispatcher.MCPToolDispatcher._call_mcp_tool",
             side_effect=fake_call_mcp_tool,
         ):
             ctrl.handle_task({

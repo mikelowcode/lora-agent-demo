@@ -12,7 +12,7 @@ size, the corpus did).
 
 import pytest
 
-import session_files
+from localist import session_files
 
 
 @pytest.fixture(autouse=True)

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from prompt_builder import (
+from localist.prompt_builder import (
     PromptBuilder,
     Turn,
     EpisodeBullet,

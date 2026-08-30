@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import main
+from localist import main
 
 
 @pytest.fixture()

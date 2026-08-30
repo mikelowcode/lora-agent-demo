@@ -9,7 +9,7 @@ tmp_path SQLite file, no mocking of the DB layer itself.
 
 import sqlite3
 
-from memory_manager import MemoryManager, _SCHEMA_VERSION
+from localist.memory_manager import MemoryManager, _SCHEMA_VERSION
 
 
 class TestHackerNewsCache:

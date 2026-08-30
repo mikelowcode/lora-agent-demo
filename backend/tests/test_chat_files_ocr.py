@@ -23,11 +23,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-import session_files
-from mcp_server import ocr
-from mcp_tool_dispatcher import MCPToolDispatcher
-from prompt_builder import ToolResult
+from localist import main
+from localist import session_files
+from localist.mcp_server import ocr
+from localist.mcp_tool_dispatcher import MCPToolDispatcher
+from localist.prompt_builder import ToolResult
 
 
 @pytest.fixture()

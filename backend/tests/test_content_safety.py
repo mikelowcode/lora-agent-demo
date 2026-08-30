@@ -8,7 +8,7 @@ score clean, and covers invisible-Unicode detection specifically since it's
 easy to get subtly wrong (category check, not a fixed character blocklist).
 """
 
-from content_safety import scan_content
+from localist.content_safety import scan_content
 
 
 class TestPromptInjection:

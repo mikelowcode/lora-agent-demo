@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from memory_manager import (
+from localist.memory_manager import (
     MemoryManager,
     _pack_embedding,
     _unpack_embedding,
@@ -313,7 +313,7 @@ class TestChatTurnsProvenanceMismatch:
         _insert_chat_turn_raw(path, content="hello", embedded=True)
         _set_provenance(path, "chat_turns", _OTHER)
 
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             mm = MemoryManager(
                 db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED,
             )
@@ -342,7 +342,7 @@ class TestChatTurnsProvenanceMismatch:
         _insert_chat_turn_raw(path, content="hello", embedded=True)
         assert _get_provenance(path, "chat_turns") is None
 
-        with caplog.at_level(logging.WARNING, logger="memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="localist.memory_manager"):
             mm = MemoryManager(
                 db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED,
             )

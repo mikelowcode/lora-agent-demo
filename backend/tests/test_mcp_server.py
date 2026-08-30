@@ -42,8 +42,8 @@ import pytest
 
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from mcp_server import chart, file_ops, github, hacker_news, news_search, ocr, search_format, url_fetch, web_search
-from mcp_server.main import mcp as mcp_app
+from localist.mcp_server import chart, file_ops, github, hacker_news, news_search, ocr, search_format, url_fetch, web_search
+from localist.mcp_server.main import mcp as mcp_app
 
 
 # ---------------------------------------------------------------------------

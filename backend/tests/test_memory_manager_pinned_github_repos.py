@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from memory_manager import MemoryManager, _SCHEMA_VERSION
+from localist.memory_manager import MemoryManager, _SCHEMA_VERSION
 
 
 class TestPinnedGithubRepos:

@@ -25,9 +25,9 @@ from unittest.mock import patch
 
 import pytest
 
-import omlx_runtime_client as _omlx_mod
-from omlx_runtime_client import OMLXRuntimeClient
-from prompt_builder import Turn
+from localist import omlx_runtime_client as _omlx_mod
+from localist.omlx_runtime_client import OMLXRuntimeClient
+from localist.prompt_builder import Turn
 
 
 def _fake_models_response(entries: list[dict]):
@@ -91,7 +91,7 @@ class TestOverlapWarningLogging:
     def test_no_warning_when_no_call_in_flight(self, caplog):
         client = OMLXRuntimeClient()
         with patch.object(_omlx_mod.requests, "post", return_value=_fake_response(["hi"])):
-            with caplog.at_level(logging.WARNING, logger="omlx_runtime_client"):
+            with caplog.at_level(logging.WARNING, logger="localist.omlx_runtime_client"):
                 result = client.infer(prompt="hello", label="main_dispatch")
 
         assert result == "hi"
@@ -105,7 +105,7 @@ class TestOverlapWarningLogging:
         _omlx_mod._inflight_count = 1
         try:
             with patch.object(_omlx_mod.requests, "post", return_value=_fake_response(["hi"])):
-                with caplog.at_level(logging.WARNING, logger="omlx_runtime_client"):
+                with caplog.at_level(logging.WARNING, logger="localist.omlx_runtime_client"):
                     client.infer(prompt="hello", label="implicit_extraction")
         finally:
             pass
@@ -168,7 +168,7 @@ class TestSerializationLock:
         check always sees 0.
         """
         client = OMLXRuntimeClient()
-        with caplog.at_level(logging.WARNING, logger="omlx_runtime_client"):
+        with caplog.at_level(logging.WARNING, logger="localist.omlx_runtime_client"):
             self._concurrent_calls(client, delay_s=0.05)
 
         assert "RUNTIME_OVERLAP" not in caplog.text
@@ -184,7 +184,7 @@ class TestSerializationLock:
         """
         client = OMLXRuntimeClient()
         with patch.object(_omlx_mod, "_inflight_lock", _NullLock()):
-            with caplog.at_level(logging.WARNING, logger="omlx_runtime_client"):
+            with caplog.at_level(logging.WARNING, logger="localist.omlx_runtime_client"):
                 self._concurrent_calls(client, delay_s=0.05)
 
         assert "RUNTIME_OVERLAP" in caplog.text
@@ -193,7 +193,7 @@ class TestSerializationLock:
     def test_label_reaches_debug_log(self, caplog):
         client = OMLXRuntimeClient()
         with patch.object(_omlx_mod.requests, "post", return_value=_fake_response(["hi"])):
-            with caplog.at_level(logging.DEBUG, logger="omlx_runtime_client"):
+            with caplog.at_level(logging.DEBUG, logger="localist.omlx_runtime_client"):
                 client.infer(prompt="hello", label="working_state")
 
         assert "label=working_state" in caplog.text

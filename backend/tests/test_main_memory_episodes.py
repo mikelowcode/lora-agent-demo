@@ -13,8 +13,8 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from memory_manager import MemoryManager, EpisodicMemoryWriter
+from localist import main
+from localist.memory_manager import MemoryManager, EpisodicMemoryWriter
 
 
 @pytest.fixture()
@@ -125,7 +125,7 @@ class TestApproveEndpointGraphHook:
     def controller(self, client):
         from unittest.mock import MagicMock
 
-        from controller_agent import ControllerAgent
+        from localist.controller_agent import ControllerAgent
 
         prev_controller = main._state.controller
         main._state.controller = ControllerAgent(
@@ -243,7 +243,7 @@ class TestReactivateEndpointGraphHook:
     def controller(self, client):
         from unittest.mock import MagicMock
 
-        from controller_agent import ControllerAgent
+        from localist.controller_agent import ControllerAgent
 
         prev_controller = main._state.controller
         main._state.controller = ControllerAgent(

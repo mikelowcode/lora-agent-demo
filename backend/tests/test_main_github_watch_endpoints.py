@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from memory_manager import MemoryManager
+from localist import main
+from localist.memory_manager import MemoryManager
 
 _FAKE_REPOS = [
     {

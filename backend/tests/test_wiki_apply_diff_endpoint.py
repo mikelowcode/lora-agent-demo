@@ -22,9 +22,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from memory_manager import MemoryManager
-from wiki_agent import WikiAgent
+from localist import main
+from localist.memory_manager import MemoryManager
+from localist.wiki_agent import WikiAgent
 
 
 class _FakeRuntime:

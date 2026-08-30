@@ -21,8 +21,8 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from memory_manager import MemoryManager
+from localist import main
+from localist.memory_manager import MemoryManager
 
 
 def _settings(**overrides):

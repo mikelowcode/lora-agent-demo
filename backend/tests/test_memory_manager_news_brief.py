@@ -8,7 +8,7 @@ MemoryManager against a tmp_path SQLite file, no mocking of the DB layer
 itself.
 """
 
-from memory_manager import MemoryManager
+from localist.memory_manager import MemoryManager
 
 
 class TestNewsPreferences:

@@ -22,8 +22,8 @@ path, which has no such wrapper and therefore needs its own floor.
 
 from unittest.mock import MagicMock
 
-from conversational_agent import ConversationalAgent, _EMPTY_RESPONSE_FALLBACK
-from controller_agent import SubTask, TaskStatus
+from localist.conversational_agent import ConversationalAgent, _EMPTY_RESPONSE_FALLBACK
+from localist.controller_agent import SubTask, TaskStatus
 
 
 def _make_runtime(infer_return: str = "Normal answer.") -> MagicMock:

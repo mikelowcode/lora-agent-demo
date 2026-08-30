@@ -17,8 +17,16 @@ variable); embeddings always run locally regardless of the active chat backend.
 cd backend
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[mlx,ocr,chart,dev]"   # Apple Silicon: full local stack
+# pip install -e ".[dev]"               # any OS: base install, Ollama/Foundry only
 ```
+`backend/pyproject.toml` is the dependency source of truth (`src/localist/` layout, installed
+editable). Base install is cross-platform with no MLX/Vision/PyMuPDF; `[mlx]` (local embeddings)
+and `[ocr]` (local OCR — Apple Vision + PyMuPDF) are both Apple-Silicon-only extras, gated by
+`platform_machine == 'arm64'` markers matching each feature's own runtime gate; `[chart]`
+(matplotlib, for `generate_chart`) is cross-platform. See `THIRD_PARTY_LICENSES.md` for why `[mlx]`
+and `[ocr]` pull in copyleft dependencies (GPLv3, AGPL-3.0 respectively).
+
 Copy `backend/.env.example` to `backend/.env`. Only `LANGSEARCH_API_KEY` is required for full
 functionality (`web_search`); everything else has a working default.
 
@@ -40,7 +48,7 @@ python -m pytest tests/test_planner_phase3.py -v    # one file
 python -m pytest tests/test_planner_phase3.py -k test_whats_up_with_question_mark_filtered -v   # one test
 ```
 All tests mock inference and SQLite — no live oMLX/Ollama server or API keys required to run them.
-Verified clean as of 2026-07-08: 578 passed, 0 failed.
+Verified clean as of 2026-08-30: 1523 passed, 0 failed.
 
 ### Frontend
 ```bash
@@ -53,16 +61,19 @@ npm run check    # svelte-kit sync + svelte-check (type checking; no separate li
 ## Architecture
 
 Request flow: **Localist UI** (SvelteKit) → HTTP → **FastAPI backend**, port 8001
-(`backend/main.py`) → `ControllerAgent` → `Planner` (deterministic, priority-ordered rule engine,
-P1–P6, no inference used for routing) → `RoutingPlan` → either `ConversationalAgent` (answers,
-RAG, tool calls) or `WikiAgent` (raw document → structured wiki page ingestion).
+(`backend/src/localist/main.py`) → `ControllerAgent` → `Planner` (deterministic, priority-ordered
+rule engine, P1–P6, no inference used for routing) → `RoutingPlan` → either `ConversationalAgent`
+(answers, RAG, tool calls) or `WikiAgent` (raw document → structured wiki page ingestion). The
+backend is a real installable package (`localist`, `backend/pyproject.toml`, `src/` layout,
+installed editable) — see `backend/src/localist/`, not a flat script directory.
 
 Tool calls go through `MCPToolDispatcher`, which opens an MCP session (SSE transport) to
-**localist-mcp**, a standalone FastAPI/FastMCP server on port 8003 (`backend/mcp_server/`)
-exposing `web_search` (LangSearch), `fetch_url` (readability-lxml extraction), and the `file_op`
-tools (`read_file`/`write_file`/`append_file`, sandboxed under `LOCALIST_MCP_PROJECT_ROOT`). The
-legacy in-process `ToolDispatcher` and the standalone Fetcher microservice (former port 8002) are
-both retired — their logic now lives on localist-mcp.
+**localist-mcp**, a standalone FastAPI/FastMCP server on port 8003
+(`backend/src/localist/mcp_server/`) exposing `web_search` (LangSearch), `fetch_url`
+(readability-lxml extraction), and the `file_op` tools (`read_file`/`write_file`/`append_file`,
+sandboxed under `LOCALIST_MCP_PROJECT_ROOT`). The legacy in-process `ToolDispatcher` and the
+standalone Fetcher microservice (former port 8002) are both retired — their logic now lives on
+localist-mcp.
 
 All inference goes through a `BaseRuntimeClient`-conforming runtime selected at startup via
 `LOCALIST_RUNTIME_BACKEND` and constructed by `runtime_factory.py`: `OMLXRuntimeClient`,

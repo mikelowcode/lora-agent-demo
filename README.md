@@ -52,10 +52,17 @@ reached via `MCPToolDispatcher`'s normal chat-turn dispatch; see Attachments bel
 cd backend
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[mlx,ocr,chart,dev]"   # Apple Silicon: full local stack (MLX embeddings, OCR, chart tool)
+# pip install -e ".[dev]"               # any OS: base install — Ollama/Foundry, keyword-only retrieval
 ```
 
+`[mlx]` and `[ocr]` are Apple-Silicon-only (platform markers make them a no-op elsewhere); `[chart]`
+is cross-platform. See `THIRD_PARTY_LICENSES.md` — both `[mlx]` and `[ocr]` pull in copyleft
+dependencies (GPLv3, AGPL-3.0 respectively).
+
 First backend startup downloads the local embedding model (`mlx-community/embeddinggemma-300m-4bit`, ~400MB) from the Hugging Face Hub and caches it — a one-time cost that needs internet access. Without it (or on non-Apple-Silicon hardware, where it can't run at all), episodic memory and RAG retrieval still work in keyword-only mode, or via an Ollama-served embedding model instead (see `LOCALIST_EMBEDDING_MODEL` below).
+
+Localist's own code is MIT-licensed (see `LICENSE`), but this downloaded model is not — EmbeddingGemma is built on Google's Gemma and distributed under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms), not MIT. See `THIRD_PARTY_LICENSES.md` for the full dependency and model-weight license audit.
 
 ## Running
 
@@ -117,27 +124,28 @@ See `backend/.env.example` for the full list (embedding engine, wiki/raw directo
 ```
 localist/
 ├── backend/
-│   ├── main.py                  # FastAPI entry, port 8001
-│   ├── controller_agent.py      # Task orchestration
-│   ├── planner.py               # Routing rules (P0–P6)
-│   ├── conversational_agent.py  # Prompt assembly, RAG, tools
-│   ├── wiki_agent.py            # Document ingestion / diff
-│   ├── prompt_builder.py        # 7-slot prompt assembler
-│   ├── mcp_tool_dispatcher.py   # MCP/SSE client to localist-mcp; research loop
-│   ├── memory_manager.py        # Episodic + RAG memory
-│   ├── bm25.py                  # Okapi BM25 keyword scorer (no-embedding fallback)
-│   ├── episodic_extractor.py    # Episode extraction
-│   ├── content_safety.py        # Pre-write content scanner
-│   ├── embedding_engine.py      # Local embedding engine
-│   ├── runtime_factory.py       # Backend selection (foundry/omlx/ollama), live-swappable
-│   ├── chart_tool_schema.py     # generate_chart argument extraction/validation
-│   ├── news_brief.py            # Daily News Brief: NewsAPI calls, formatting (Live Feed panel)
-│   ├── github_watch.py          # GitHub Watch Feed: watched-repo releases (Live Feed panel)
-│   ├── hacker_news.py           # Hacker News: top-stories feed (Live Feed panel)
-│   ├── mcp_server/              # localist-mcp — port 8003 (web_search, fetch_url, file_op, generate_chart, news_search, github_search/github_read/github_release, hacker_news_search, ocr_extract)
+│   ├── pyproject.toml            # Dependency source of truth (base + mlx/ocr/chart/dev extras)
+│   ├── src/localist/              # Installable package (pip install -e .), src/ layout
+│   │   ├── main.py                  # FastAPI entry, port 8001
+│   │   ├── controller_agent.py      # Task orchestration
+│   │   ├── planner.py               # Routing rules (P0–P6)
+│   │   ├── conversational_agent.py  # Prompt assembly, RAG, tools
+│   │   ├── wiki_agent.py            # Document ingestion / diff
+│   │   ├── prompt_builder.py        # 7-slot prompt assembler
+│   │   ├── mcp_tool_dispatcher.py   # MCP/SSE client to localist-mcp; research loop
+│   │   ├── memory_manager.py        # Episodic + RAG memory
+│   │   ├── bm25.py                  # Okapi BM25 keyword scorer (no-embedding fallback)
+│   │   ├── episodic_extractor.py    # Episode extraction
+│   │   ├── content_safety.py        # Pre-write content scanner
+│   │   ├── embedding_engine.py      # Local embedding engine
+│   │   ├── runtime_factory.py       # Backend selection (foundry/omlx/ollama), live-swappable
+│   │   ├── chart_tool_schema.py     # generate_chart argument extraction/validation
+│   │   ├── news_brief.py            # Daily News Brief: NewsAPI calls, formatting (Live Feed panel)
+│   │   ├── github_watch.py          # GitHub Watch Feed: watched-repo releases (Live Feed panel)
+│   │   ├── hacker_news.py           # Hacker News: top-stories feed (Live Feed panel)
+│   │   └── mcp_server/              # localist-mcp — port 8003 (web_search, fetch_url, file_op, generate_chart, news_search, github_search/github_read/github_release, hacker_news_search, ocr_extract)
 │   ├── wiki/                    # Persona, user profile, indexed pages, MEMORY.md/index.md/logs.md
-│   ├── tests/                   # Unit + integration tests by phase
-│   └── requirements.txt
+│   └── tests/                   # Unit + integration tests by phase
 ├── diagnostics/                 # Read-only live-verification scripts (not part of the test suite)
 └── localist-ui/                 # Frontend
 ```

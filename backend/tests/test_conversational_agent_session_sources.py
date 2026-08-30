@@ -14,8 +14,8 @@ places in conversational_agent.py fold attached session files into the
 
 from unittest.mock import MagicMock, patch
 
-from conversational_agent import ConversationalAgent
-from controller_agent import SubTask, TaskStatus
+from localist.conversational_agent import ConversationalAgent
+from localist.controller_agent import SubTask, TaskStatus
 
 
 def _make_runtime(infer_return: str = "Normal answer.") -> MagicMock:
@@ -88,7 +88,7 @@ class TestNonPrebuiltPathSessionFiles:
         subtask = _make_subtask(instruction="Tell me about Localist.")
 
         with patch(
-            "conversational_agent._session_files.get_files",
+            "localist.conversational_agent._session_files.get_files",
             return_value=[
                 _fake_session_file("notes.md"),
                 _fake_session_file("todo.txt"),

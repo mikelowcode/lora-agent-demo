@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from memory_manager import MemoryManager
-from build_graph import build_graph
+from localist.memory_manager import MemoryManager
+from localist.build_graph import build_graph
 
 
 # ---------------------------------------------------------------------------

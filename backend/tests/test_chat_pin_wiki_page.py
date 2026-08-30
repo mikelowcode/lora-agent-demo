@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-import session_files
+from localist import main
+from localist import session_files
 
 
 @pytest.fixture()

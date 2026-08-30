@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-import news_brief
+from localist import news_brief
 
 
 class _FakeResponse:

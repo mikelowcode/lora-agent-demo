@@ -27,10 +27,10 @@ double rather than importing a constant.
 
 from __future__ import annotations
 
-from omlx_runtime_client import OMLXRuntimeClient
-from foundry_runtime_client import FoundryRuntimeClient
-from ollama_runtime_client import OllamaRuntimeClient
-from context_profile import (
+from localist.omlx_runtime_client import OMLXRuntimeClient
+from localist.foundry_runtime_client import FoundryRuntimeClient
+from localist.ollama_runtime_client import OllamaRuntimeClient
+from localist.context_profile import (
     CLOUD_PROFILE,
     ContextProfile,
     profile_for,

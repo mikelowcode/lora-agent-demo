@@ -22,8 +22,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from warmup import parse_warmup_fixture, run_cache_warmup
-from prompt_builder import ToolResult, Turn
+from localist.warmup import parse_warmup_fixture, run_cache_warmup
+from localist.prompt_builder import ToolResult, Turn
 
 
 # ---------------------------------------------------------------------------

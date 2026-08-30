@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-import github_watch
+from localist import github_watch
 
 
 def _subscriptions_response(repos: list[dict], status_code: int = 200) -> httpx.Response:

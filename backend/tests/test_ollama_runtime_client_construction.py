@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from ollama_runtime_client import DEFAULT_CHAT_MODEL, OllamaRuntimeClient
+from localist.ollama_runtime_client import DEFAULT_CHAT_MODEL, OllamaRuntimeClient
 
 
 def test_default_chat_model_is_empty():

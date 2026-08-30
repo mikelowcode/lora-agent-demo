@@ -45,8 +45,8 @@ from unittest.mock import patch
 
 import pytest
 
-import ollama_runtime_client as _ollama_mod
-from ollama_runtime_client import OllamaRuntimeClient, _iter_ndjson_chunks
+from localist import ollama_runtime_client as _ollama_mod
+from localist.ollama_runtime_client import OllamaRuntimeClient, _iter_ndjson_chunks
 
 
 def _fake_response(lines: list[str]):
@@ -221,7 +221,7 @@ class TestZeroContentWarning:
         ])
 
         with patch.object(_ollama_mod.requests, "post", return_value=response):
-            with caplog.at_level("WARNING", logger="ollama_runtime_client"):
+            with caplog.at_level("WARNING", logger="localist.ollama_runtime_client"):
                 chunks = list(client.infer_stream("some prompt", label="test-label"))
 
         assert chunks == []
@@ -247,7 +247,7 @@ class TestZeroContentWarning:
         ])
 
         with patch.object(_ollama_mod.requests, "post", return_value=response):
-            with caplog.at_level("WARNING", logger="ollama_runtime_client"):
+            with caplog.at_level("WARNING", logger="localist.ollama_runtime_client"):
                 chunks = list(client.infer_stream("some prompt"))
 
         assert chunks == ["an answer"]

@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from mcp_server import file_ops
+from localist import main
+from localist.mcp_server import file_ops
 
 
 @pytest.fixture()

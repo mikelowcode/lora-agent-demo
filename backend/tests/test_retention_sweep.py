@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from memory_manager import MemoryManager
+from localist.memory_manager import MemoryManager
 
 
 @pytest.fixture()

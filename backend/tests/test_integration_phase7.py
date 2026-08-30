@@ -24,14 +24,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from controller_agent import (
+from localist.controller_agent import (
     ControllerAgent,
     TaskStatus,
     AgentResult,
     SubTask,
 )
-from memory_manager import MemoryManager
-from prompt_builder import PromptBuilder, Turn
+from localist.memory_manager import MemoryManager
+from localist.prompt_builder import PromptBuilder, Turn
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ class TestFullPipeline:
         conv = make_conv_agent(answer="I am LORA.")
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm_mock)
 
-        with caplog.at_level(logging.DEBUG, logger="controller_agent"):
+        with caplog.at_level(logging.DEBUG, logger="localist.controller_agent"):
             result = ctrl.handle_task({"instruction": "check the wiki for LORA research assistant"})
 
         assert result["status"] == "complete"
@@ -240,7 +240,7 @@ class TestFullPipeline:
         conv = make_conv_agent()
         ctrl = ControllerAgent(runtime=rt, agents=[conv], memory_manager=mm)
 
-        with caplog.at_level(logging.DEBUG, logger="controller_agent"):
+        with caplog.at_level(logging.DEBUG, logger="localist.controller_agent"):
             ctrl.handle_task({"instruction": "What is 2+2?"})
 
         messages = [r.getMessage() for r in caplog.records]

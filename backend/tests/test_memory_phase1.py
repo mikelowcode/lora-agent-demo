@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_manager import (
+from localist.memory_manager import (
     MemoryManager,
     EpisodicMemoryWriter,
     EpisodicMemoryReader,
@@ -31,7 +31,7 @@ from memory_manager import (
     _query_hash,
     _SCHEMA_VERSION,
 )
-import wiki_maintenance_log
+from localist import wiki_maintenance_log
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import main
+from localist import main
 
 
 def _settings(*, embedding_model="", embedding_engine_enabled=True, runtime_backend="ollama"):
@@ -44,7 +44,7 @@ class TestRuntimeBackendTier:
         runtime = _runtime()
         health = {"embed_model_found": True}
 
-        with caplog.at_level(logging.INFO, logger="main"):
+        with caplog.at_level(logging.INFO, logger="localist.main"):
             embed_fn, embedding_engine = main._configure_embedding_source(settings, runtime, health)
 
         assert embed_fn is runtime.embed
@@ -82,7 +82,7 @@ class TestEmbeddingEngineTier:
         runtime = _runtime()
         health = {"embed_model_found": None}
 
-        with caplog.at_level(logging.INFO, logger="main"):
+        with caplog.at_level(logging.INFO, logger="localist.main"):
             embed_fn, embedding_engine = main._configure_embedding_source(settings, runtime, health)
 
         engine_cls.assert_called_once()
@@ -120,7 +120,7 @@ class TestSkipOnNonAppleSilicon:
         runtime = _runtime()
         health = {"embed_model_found": None}
 
-        with caplog.at_level(logging.INFO, logger="main"):
+        with caplog.at_level(logging.INFO, logger="localist.main"):
             embed_fn, embedding_engine = main._configure_embedding_source(settings, runtime, health)
 
         engine_cls.assert_not_called()
@@ -141,7 +141,7 @@ class TestSkipOnNonAppleSilicon:
 
         settings = _settings(embedding_model="", embedding_engine_enabled=True)
 
-        with caplog.at_level(logging.INFO, logger="main"):
+        with caplog.at_level(logging.INFO, logger="localist.main"):
             main._configure_embedding_source(settings, _runtime(), {})
 
         skip_records = [r for r in caplog.records if "EmbeddingEngine skipped" in r.message]
@@ -158,7 +158,7 @@ class TestDisabledTier:
 
         settings = _settings(embedding_model="", embedding_engine_enabled=False)
 
-        with caplog.at_level(logging.INFO, logger="main"):
+        with caplog.at_level(logging.INFO, logger="localist.main"):
             embed_fn, embedding_engine = main._configure_embedding_source(settings, _runtime(), {})
 
         engine_cls.assert_not_called()

@@ -19,10 +19,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from conversational_agent import ConversationalAgent
-from controller_agent import SubTask
-from memory_manager import MemoryManager
+from localist import main
+from localist.conversational_agent import ConversationalAgent
+from localist.controller_agent import SubTask
+from localist.memory_manager import MemoryManager
 
 
 @pytest.fixture()

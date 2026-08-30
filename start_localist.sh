@@ -50,7 +50,7 @@ fi
 # ---------------------------------------------------------------------------
 if [[ ! -f "$VENV_PYTHON" ]]; then
     echo "ERROR: venv not found at $VENV_PYTHON"
-    echo "Run: cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    echo "Run: cd backend && python -m venv .venv && source .venv/bin/activate && pip install -e \".[dev]\""
     exit 1
 fi
 
@@ -95,23 +95,25 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # Launch services
-# Backend and localist-mcp run from backend/ so import paths resolve correctly.
+# `localist` is pip-installed editable into backend/.venv (src/ layout), so
+# these resolve from any cwd — cd backend/ here only for log-path convenience
+# and to keep --reload-dir/--reload-exclude paths short.
 # ---------------------------------------------------------------------------
 cd "$BACKEND_DIR"
 
-"$VENV_PYTHON" -m uvicorn main:app \
+"$VENV_PYTHON" -m uvicorn localist.main:app \
     --host 127.0.0.1 \
     --port 8001 \
     --reload \
-    --reload-exclude 'mcp_server/*' \
+    --reload-exclude 'src/localist/mcp_server/*' \
     > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
-"$VENV_PYTHON" -m uvicorn mcp_server.main:app \
+"$VENV_PYTHON" -m uvicorn localist.mcp_server.main:app \
     --host 127.0.0.1 \
     --port 8003 \
     --reload \
-    --reload-dir mcp_server \
+    --reload-dir src/localist/mcp_server \
     > "$LOG_DIR/mcp_server.log" 2>&1 &
 MCP_PID=$!
 
