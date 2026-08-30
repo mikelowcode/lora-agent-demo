@@ -4,6 +4,8 @@ A local-first, agentic general assistant built primarily for macOS Apple Silicon
 
 Inference-engine-agnostic: ships with oMLX, Ollama (including Ollama Cloud models), and Azure AI Foundry, swappable via one config variable or live at runtime with no restart. Embeddings always run locally regardless of chat backend — via MLX EmbeddingGemma (Apple Silicon only) or, with the Ollama backend, via any locally-served Ollama embedding model (e.g. `nomic-embed-text`), which also makes the framework usable on non-Apple-Silicon hardware.
 
+See `PRIVACY.md` for what stays local, what can leave your machine and when, and what a fresh clone actually contains; `THIRD_PARTY_LICENSES.md` for the dependency/model-weight license audit.
+
 ---
 
 ## Architecture
@@ -70,6 +72,8 @@ Localist's own code is MIT-licensed (see `LICENSE`), but this downloaded model i
 ./start_localist.sh         # starts backend, localist-mcp, and frontend
 ./start_localist.sh --stop  # stops all three
 ```
+
+`backend/wiki/` starts empty — see `examples/` for a sample document you can ingest right away to try the raw→wiki pipeline without supplying your own documents first.
 
 ## Configuration
 
@@ -144,9 +148,10 @@ localist/
 │   │   ├── github_watch.py          # GitHub Watch Feed: watched-repo releases (Live Feed panel)
 │   │   ├── hacker_news.py           # Hacker News: top-stories feed (Live Feed panel)
 │   │   └── mcp_server/              # localist-mcp — port 8003 (web_search, fetch_url, file_op, generate_chart, news_search, github_search/github_read/github_release, hacker_news_search, ocr_extract)
-│   ├── wiki/                    # Persona, user profile, indexed pages, MEMORY.md/index.md/logs.md
+│   ├── wiki/                    # Persona, user profile, indexed pages, MEMORY.md/index.md/logs.md (gitignored, empty on a fresh clone)
 │   └── tests/                   # Unit + integration tests by phase
 ├── diagnostics/                 # Read-only live-verification scripts (not part of the test suite)
+├── examples/                    # Sample document + walkthrough for the raw→wiki ingestion pipeline
 └── localist-ui/                 # Frontend
 ```
 
@@ -157,6 +162,8 @@ cd backend
 source .venv/bin/activate
 python -m pytest tests/ -v
 ```
+
+Run `pre-commit install` once per clone (after `pip install -e ".[dev]"`) — it wires in a hook that blocks accidentally committing runtime/personal data (`backend/wiki/`, `backend/raw/`, database files, `.env`) or stray credentials, on top of what `.gitignore` already excludes. See `PRIVACY.md` for the full boundary this enforces.
 
 Tests are organized by phase (memory substrate, routing, controller dispatch, extraction, tool dispatcher, integration, content safety, REST API) and mock inference/SQLite — no live server or API keys required.
 

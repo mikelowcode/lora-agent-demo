@@ -105,7 +105,9 @@ backend/tests/output/
 
 # ── Localist private runtime directories ──────────────────────────────
 # Wiki pages and raw documents contain personal data and are never
-# committed to the public repo. Maintain local copies only.
+# committed to the public repo. Maintain local copies only. See PRIVACY.md
+# for the full boundary; scripts/check_no_private_data.py (a pre-commit
+# hook) enforces it as defense-in-depth alongside this file.
 backend/wiki/
 backend/raw/
 backend/generated_files/
