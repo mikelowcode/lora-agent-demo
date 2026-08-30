@@ -89,7 +89,8 @@
 
     let conversationTitle: string | undefined;
     if (get(isFirstTurnOfConversation)) {
-      conversationTitle = instruction.length > 60 ? instruction.slice(0, 60) + '…' : instruction;
+      conversationTitle =
+        article.title.length > 60 ? article.title.slice(0, 60) + '…' : article.title;
       isFirstTurnOfConversation.set(false);
     }
 
@@ -133,7 +134,7 @@
 
     let conversationTitle: string | undefined;
     if (get(isFirstTurnOfConversation)) {
-      conversationTitle = instruction.length > 60 ? instruction.slice(0, 60) + '…' : instruction;
+      conversationTitle = story.title.length > 60 ? story.title.slice(0, 60) + '…' : story.title;
       isFirstTurnOfConversation.set(false);
     }
 
@@ -180,7 +181,7 @@
 
     let conversationTitle: string | undefined;
     if (get(isFirstTurnOfConversation)) {
-      conversationTitle = instruction.length > 60 ? instruction.slice(0, 60) + '…' : instruction;
+      conversationTitle = repo.label.length > 60 ? repo.label.slice(0, 60) + '…' : repo.label;
       isFirstTurnOfConversation.set(false);
     }
 
