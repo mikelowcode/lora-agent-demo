@@ -127,9 +127,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .paths import get_backend_root, get_resource_root
+
 from dotenv import load_dotenv
-# backend/src/localist/main.py -> backend/.env (3 parents up)
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+load_dotenv(get_backend_root() / ".env")
 
 import asyncio
 import datetime
@@ -432,8 +433,7 @@ def _build_controller(
 # Live runtime-backend switching support
 # ---------------------------------------------------------------------------
 
-# backend/src/localist/main.py -> backend/ (3 parents up)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = get_backend_root()
 
 # Serializes any sequence that reads-then-swaps _state.runtime/wiki_agent/
 # controller, so two concurrent switch/pin requests can't interleave their
@@ -595,9 +595,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     wiki_dir      = Path(settings.wiki_dir)      if settings.wiki_dir      else project_root / "wiki"
     raw_dir       = Path(settings.raw_dir)       if settings.raw_dir       else project_root / "raw"
     generated_dir = Path(settings.generated_dir) if settings.generated_dir else project_root / "generated_files"
-    schema_path   = Path(settings.schema_path)   if settings.schema_path   else project_root / "SCHEMA.md"
-    templates_dir = Path(settings.templates_dir) if settings.templates_dir else project_root / "templates"
     memory_db     = Path(settings.memory_db)     if settings.memory_db     else project_root / "localist_memory.db"
+    # Created if missing — in the source tree these are already guaranteed
+    # to exist via git-tracked .gitkeep files, but a frozen build's fresh
+    # ~/Library/Application Support/Localist has nothing playing that role;
+    # WikiAgent's raw-ingest path validates wiki_dir.exists() (not just
+    # best-effort skip like the seeding step below), so this must run
+    # before that first request, not just before MemoryManager seeding.
+    for _dir in (wiki_dir, raw_dir, generated_dir):
+        _dir.mkdir(parents=True, exist_ok=True)
+    # schema_path/templates_dir are read-only, ship-with-the-app resources
+    # (not user data) — resource_root, not project_root, so a frozen build
+    # finds them inside its own bundle rather than an empty data directory.
+    resource_root = get_resource_root()
+    schema_path   = Path(settings.schema_path)   if settings.schema_path   else resource_root / "SCHEMA.md"
+    templates_dir = Path(settings.templates_dir) if settings.templates_dir else resource_root / "templates"
 
     # -- Embedding source selection -------------------------------------------
     # See _configure_embedding_source() for the three-tier precedence rules

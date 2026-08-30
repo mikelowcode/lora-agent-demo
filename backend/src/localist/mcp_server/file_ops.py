@@ -18,6 +18,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ..paths import get_backend_root
+
 # Maximum characters read from a file (mirrors tool_dispatcher._MAX_FILE_READ_CHARS —
 # kept duplicated rather than imported so this service has no dependency on the
 # backend's agent stack).
@@ -41,12 +43,7 @@ def get_project_root() -> Path:
     global _project_root
     if _project_root is None:
         env_root = os.environ.get("LOCALIST_MCP_PROJECT_ROOT")
-        base = (
-            Path(env_root).resolve()
-            if env_root
-            # backend/src/localist/mcp_server/file_ops.py -> backend/
-            else Path(__file__).resolve().parent.parent.parent.parent
-        )
+        base = Path(env_root).resolve() if env_root else get_backend_root()
         _project_root = base / "generated_files"
         _project_root.mkdir(parents=True, exist_ok=True)
     return _project_root

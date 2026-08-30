@@ -29,7 +29,7 @@ Architectural contract
 
 Database file location
 ----------------------
-Defaults to  <project_root>/lora_memory.db
+Defaults to  <project_root>/localist_memory.db
 Override via the ``db_path`` constructor argument or the LOCALIST_MEMORY_DB
 environment variable (the latter is read by main.py's Settings class —
 add  memory_db: str | None = None  to Settings and pass it through).
@@ -143,6 +143,7 @@ from typing import Any, Callable
 from . import bm25
 from . import content_safety
 from . import wiki_maintenance_log
+from .paths import get_backend_root
 from .wiki_doc import META_WIKI_FILENAMES
 
 logger = logging.getLogger(__name__)
@@ -361,7 +362,7 @@ class MemoryManager:
     ----------
     db_path :
         Path to the SQLite file.  Created (with parent dirs) if absent.
-        Defaults to  <this file's parent>/lora_memory.db.
+        Defaults to  <backend root>/localist_memory.db.
     embed_fn :
         Optional callable that accepts a text string and returns a list[float]
         of length 768.  When provided, embeddings are computed and stored on
@@ -386,8 +387,7 @@ class MemoryManager:
         embedding_model_name:   str | None = None,
     ) -> None:
         if db_path is None:
-            # backend/src/localist/memory_manager.py -> backend/
-            db_path = Path(__file__).resolve().parent.parent.parent / "lora_memory.db"
+            db_path = get_backend_root() / "localist_memory.db"
         self._db_path             = Path(db_path)
         self._embed_fn            = embed_fn
         self._embedding_model_name = embedding_model_name

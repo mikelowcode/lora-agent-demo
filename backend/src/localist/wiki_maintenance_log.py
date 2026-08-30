@@ -21,10 +21,11 @@ import datetime
 import logging
 from pathlib import Path
 
+from .paths import get_backend_root
+
 logger = logging.getLogger(__name__)
 
-# backend/src/localist/wiki_maintenance_log.py -> backend/
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = get_backend_root()
 _LOG_PATH = _PROJECT_ROOT / "logs" / "wiki_maintenance.log"
 
 

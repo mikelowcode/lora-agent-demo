@@ -35,6 +35,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .paths import get_backend_root
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
 logger = logging.getLogger("backfill_episode_embeddings")
 
@@ -52,8 +54,7 @@ def main() -> int:
     from .memory_manager import EpisodicMemoryWriter, _pack_embedding
 
     settings = Settings()
-    # backend/src/localist/backfill_episode_embeddings.py -> backend/
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = get_backend_root()
     memory_db = Path(settings.memory_db) if settings.memory_db else project_root / "localist_memory.db"
     wiki_dir = Path(settings.wiki_dir) if settings.wiki_dir else project_root / "wiki"
     memory_md_path = wiki_dir / "MEMORY.md"

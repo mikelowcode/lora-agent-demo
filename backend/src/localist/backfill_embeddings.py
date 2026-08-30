@@ -1,7 +1,7 @@
 """
 Localist — Embedding Backfill Utility
 ===================================
-Populates the ``embedding`` column for documents already in ``lora_memory.db``
+Populates the ``embedding`` column for documents already in ``localist_memory.db``
 that were indexed before EmbeddingEngine was available (rows where
 ``embedding IS NULL``).
 
@@ -12,7 +12,7 @@ Run once from inside the ``backend/`` directory after wiring EmbeddingEngine:
     python backfill_embeddings.py
 
 Options (all optional):
-    --db        Path to SQLite database.  Default: ./lora_memory.db
+    --db        Path to SQLite database.  Default: ./localist_memory.db
     --model     MLX-LM model path.       Default: mlx-community/embeddinggemma-300m-4bit
     --dry-run   Print what would be updated without writing to the database.
     --force     Re-embed ALL documents, not just NULL rows.
@@ -39,6 +39,8 @@ import struct
 import sys
 import time
 from pathlib import Path
+
+from .paths import get_backend_root
 
 logging.basicConfig(
     level   = logging.INFO,
@@ -78,13 +80,12 @@ def _pack(vec: list[float]) -> bytes:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Backfill embeddings for NULL rows in lora_memory.db"
+        description="Backfill embeddings for NULL rows in localist_memory.db"
     )
     parser.add_argument(
         "--db",
-        # backend/src/localist/backfill_embeddings.py -> backend/
-        default = str(Path(__file__).resolve().parent.parent.parent / "lora_memory.db"),
-        help    = "Path to SQLite database (default: ./lora_memory.db)",
+        default = str(get_backend_root() / "localist_memory.db"),
+        help    = "Path to SQLite database (default: ./localist_memory.db)",
     )
     parser.add_argument(
         "--model",

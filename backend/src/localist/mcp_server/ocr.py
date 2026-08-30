@@ -36,6 +36,8 @@ import os
 import platform
 from pathlib import Path
 
+from ..paths import get_backend_root
+
 _IMAGE_MIME_PREFIX: str = "image/"
 _PDF_MIME: str = "application/pdf"
 
@@ -85,12 +87,7 @@ def get_upload_root() -> Path:
     global _upload_root
     if _upload_root is None:
         env_root = os.environ.get("LOCALIST_MCP_UPLOAD_ROOT")
-        base = (
-            Path(env_root).resolve()
-            if env_root
-            # backend/src/localist/mcp_server/ocr.py -> backend/
-            else Path(__file__).resolve().parent.parent.parent.parent
-        )
+        base = Path(env_root).resolve() if env_root else get_backend_root()
         _upload_root = base / "chat_uploads"
         _upload_root.mkdir(parents=True, exist_ok=True)
     return _upload_root

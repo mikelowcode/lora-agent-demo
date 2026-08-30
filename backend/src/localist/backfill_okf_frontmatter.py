@@ -23,8 +23,9 @@ from pathlib import Path
 
 import yaml
 
-# backend/src/localist/backfill_okf_frontmatter.py -> backend/
-_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+from .paths import get_backend_root
+
+_BACKEND_DIR = get_backend_root()
 
 from .wiki_doc import META_WIKI_FILENAMES, parse_wiki_doc
 

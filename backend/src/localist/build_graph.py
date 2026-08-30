@@ -38,8 +38,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# backend/src/localist/build_graph.py -> backend/
-_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+from .paths import get_backend_root
+
+_BACKEND_DIR = get_backend_root()
 
 from .memory_manager import MemoryManager
 from .wiki_doc import META_WIKI_FILENAMES, load_wiki_doc
@@ -139,8 +140,8 @@ def build_graph(wiki_dir: Path, mm: MemoryManager) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    # MemoryManager() bare default writes to lora_memory.db; the live backend
-    # uses localist_memory.db (main.py:254) — must not silently diverge.
+    # Explicit path, matching the live backend's default (main.py) — not
+    # relying on MemoryManager()'s own bare default to stay in sync.
     mm      = MemoryManager(db_path=_BACKEND_DIR / "localist_memory.db")
     summary = build_graph(_WIKI_DIR, mm)
     print("Graph build complete.")

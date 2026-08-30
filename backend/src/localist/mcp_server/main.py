@@ -137,9 +137,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..paths import get_backend_root
+
 from dotenv import load_dotenv
-# backend/src/localist/mcp_server/main.py -> backend/.env (4 parents up)
-load_dotenv(Path(__file__).resolve().parent.parent.parent.parent / ".env")
+load_dotenv(get_backend_root() / ".env")
 
 import logging
 import os

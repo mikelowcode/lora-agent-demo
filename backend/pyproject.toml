@@ -22,7 +22,13 @@ dependencies = [
     "chardet>=7.4.3",
     "cssselect>=1.4.0",
     "httpx>=0.28.1",
-    "mcp>=1.28.1",
+    # <2.0.0: mcp 2.x renamed FastMCP to MCPServer (different import path,
+    # mcp.server.fastmcp no longer exists) — mcp_server/main.py's
+    # `from mcp.server.fastmcp import FastMCP` needs the 1.x API. Found via
+    # a genuinely fresh install (backend/packaging/ build venv) pulling
+    # 2.1.1 and crashing at import time; the long-lived dev venv never hit
+    # this because it happened to install 1.28.1 and was never recreated.
+    "mcp>=1.28.1,<2.0.0",
     "psutil>=7.0.0",
 ]
 
@@ -53,6 +59,12 @@ chart = [
 dev = [
     "pytest>=8.0.0",
     "pre-commit>=3.7.0",
+]
+# Build-time only — freezes the base-only backend + localist-mcp into
+# standalone executables for native .app packaging (backend/packaging/).
+# Not needed to run or test Localist from source.
+packaging = [
+    "pyinstaller>=6.0",
 ]
 
 [tool.setuptools.packages.find]

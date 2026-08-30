@@ -121,6 +121,7 @@ from pydantic import BaseModel, Field
 from .build_graph import build_graph
 from .mcp_server.ocr import OCR_MIME_BY_EXTENSION, get_upload_root as _ocr_get_upload_root
 from .mcp_tool_dispatcher import MCPToolDispatcher
+from .paths import get_backend_root, get_resource_root
 from .prompt_builder import PromptBuilder
 from . import wiki_maintenance_log
 from .wiki_doc import META_WIKI_FILENAMES, parse_wiki_doc
@@ -1174,8 +1175,7 @@ class WikiAgent:
         memory_manager: "MemoryManager | None" = None,
     ) -> None:
         self._runtime        = runtime
-        # backend/src/localist/wiki_agent.py -> backend/
-        self._project_root   = project_root or Path(__file__).resolve().parent.parent.parent
+        self._project_root   = project_root or get_backend_root()
         self._memory_manager = memory_manager
 
     # -----------------------------------------------------------------------
@@ -1245,8 +1245,8 @@ class WikiAgent:
             return self._fail(subtask, f"Context error: {exc}")
 
         wiki_dir      = Path(ctx.get("wiki_dir",      self._project_root / "wiki"))
-        schema_path   = Path(ctx.get("schema_path",   self._project_root / "SCHEMA.md"))
-        templates_dir = Path(ctx.get("templates_dir", self._project_root / "templates"))
+        schema_path   = Path(ctx.get("schema_path",   get_resource_root() / "SCHEMA.md"))
+        templates_dir = Path(ctx.get("templates_dir", get_resource_root() / "templates"))
         journal_path  = Path(ctx["journal_path"]) if "journal_path" in ctx else None
         auto_apply    = bool(ctx.get("auto_apply",  False))
         max_tokens    = int(ctx.get("max_tokens",   2048))
@@ -1419,8 +1419,8 @@ class WikiAgent:
         diff_target = ctx["diff_target"]
 
         wiki_dir      = Path(ctx.get("wiki_dir",      self._project_root / "wiki"))
-        schema_path   = Path(ctx.get("schema_path",   self._project_root / "SCHEMA.md"))
-        templates_dir = Path(ctx.get("templates_dir", self._project_root / "templates"))
+        schema_path   = Path(ctx.get("schema_path",   get_resource_root() / "SCHEMA.md"))
+        templates_dir = Path(ctx.get("templates_dir", get_resource_root() / "templates"))
         journal_path  = Path(ctx["journal_path"]) if "journal_path" in ctx else None
         auto_apply    = bool(ctx.get("auto_apply",  False))
         max_tokens    = int(ctx.get("max_tokens",   2048))

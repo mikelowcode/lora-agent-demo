@@ -14,8 +14,13 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-packaging/
 backend/.env
 venv/
+
+# PyInstaller build output (backend/packaging/)
+backend/packaging/build/
+backend/packaging/dist/
 
 # -------------------------
 # Node / Frontend
