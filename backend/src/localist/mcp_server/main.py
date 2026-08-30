@@ -93,8 +93,21 @@ Configuration
                                fallback path (scanned PDFs only — a real
                                text layer is read directly regardless of
                                page count). Default 20 if unset/invalid.
-  (no key needed for ocr_extract — Apple's Vision framework is local and
-   requires no account/network; macOS on Apple Silicon only.)
+  (no key needed for ocr_extract's Apple Silicon path — Vision framework is
+   local and requires no account/network.)
+  LOCALIST_OLLAMA_VISION_MODEL   Vision-capable Ollama chat model
+                               (e.g. "llava", "qwen2.5vl") for ocr_extract's
+                               image OCR path on non-Apple-Silicon platforms
+                               (mcp_server/ocr_ollama.py). No default — image
+                               OCR fails with a clear config error if unset
+                               on such a platform. PDFs are unaffected and
+                               still require Apple Silicon regardless of
+                               this setting.
+  LOCALIST_OLLAMA_URL           Local Ollama daemon base URL for the above.
+                               Default http://localhost:11434 — same
+                               variable name/meaning as backend/main.py's
+                               own Settings.ollama_url, read independently
+                               here since this is a separate process.
   OLLAMA_API_KEY                Required for ollama_web_search and
                                ollama_web_fetch — see
                                mcp_server/ollama_web_search.py and
@@ -143,6 +156,7 @@ from . import (
     hacker_news as _hacker_news,
     news_search as _news_search,
     ocr as _ocr,
+    ocr_ollama as _ocr_ollama,
     ollama_web_fetch as _ollama_web_fetch,
     ollama_web_search as _ollama_web_search,
     url_fetch as _url_fetch,
@@ -244,8 +258,12 @@ async def hacker_news_search(query: str, url: str | None = None) -> dict:
 
 @mcp.tool()
 def ocr_extract(path: str, mime_type: str, max_pdf_pages: int | None = None) -> str:
-    """Extract text from an uploaded image (incl. HEIC) or PDF via Apple's Vision framework and PyMuPDF, entirely locally. path is resolved relative to upload_root and sandboxed."""
-    return _ocr.extract_text(path, mime_type, max_pdf_pages)
+    """Extract text from an uploaded image (incl. HEIC) or PDF, entirely locally. Apple Silicon: Vision framework + PyMuPDF. Other platforms: images only, via a configured Ollama vision model (LOCALIST_OLLAMA_VISION_MODEL) — PDFs still require Apple Silicon. path is resolved relative to upload_root and sandboxed."""
+    if _ocr._is_apple_silicon():
+        return _ocr.extract_text(path, mime_type, max_pdf_pages)
+    if mime_type.startswith("image/"):
+        return _ocr_ollama.OllamaVisionOCRProvider().extract_text(path, mime_type, max_pdf_pages)
+    return _ocr.extract_text(path, mime_type, max_pdf_pages)  # PDFs: unchanged rejection
 
 
 # ── App ──────────────────────────────────────────────────────────────────────

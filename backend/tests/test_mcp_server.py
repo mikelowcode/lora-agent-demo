@@ -42,7 +42,7 @@ import pytest
 
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from localist.mcp_server import chart, file_ops, github, hacker_news, news_search, ocr, search_format, url_fetch, web_search
+from localist.mcp_server import chart, file_ops, github, hacker_news, news_search, ocr, ocr_ollama, search_format, url_fetch, web_search
 from localist.mcp_server.main import mcp as mcp_app
 from localist.mcp_server.ocr_provider import OCRProvider
 
@@ -1543,3 +1543,32 @@ class TestMCPToolsInProcess:
             )
         assert is_error is True
         assert "file not found" in text
+
+    def test_ocr_extract_tool_non_apple_silicon_image_delegates_to_ollama(self, tmp_path: Path):
+        """Off Apple Silicon, an image upload routes to OllamaVisionOCRProvider
+        instead of Vision — the provider-selection logic step 7 adds to the
+        ocr_extract tool wrapper (mcp_server/main.py), not to ocr.py itself."""
+        ocr.set_upload_root(tmp_path)
+        _write_image(tmp_path)
+        with patch.object(ocr, "_is_apple_silicon", return_value=False), \
+             patch.object(
+                 ocr_ollama.OllamaVisionOCRProvider, "extract_text",
+                 return_value="Recognized via Ollama vision route",
+             ):
+            text, is_error = asyncio.run(
+                _call_tool("ocr_extract", {"path": "photo.png", "mime_type": "image/png"})
+            )
+        assert is_error is False
+        assert text == "Recognized via Ollama vision route"
+
+    def test_ocr_extract_tool_non_apple_silicon_pdf_still_rejected(self, tmp_path: Path):
+        """Off Apple Silicon, a PDF upload still hits the existing
+        Apple-Silicon-required rejection unchanged — step 7 is images only."""
+        ocr.set_upload_root(tmp_path)
+        (tmp_path / "doc.pdf").write_bytes(b"%PDF-fake")
+        with patch.object(ocr, "_is_apple_silicon", return_value=False):
+            text, is_error = asyncio.run(
+                _call_tool("ocr_extract", {"path": "doc.pdf", "mime_type": "application/pdf"})
+            )
+        assert is_error is True
+        assert "requires macOS on Apple Silicon" in text

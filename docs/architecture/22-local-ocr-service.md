@@ -279,3 +279,73 @@ is unaffected and applies to any `OCRProvider` implementation, not just
 this one** — the Protocol's docstring says so explicitly: text extraction
 only, never general image understanding, regardless of which model or
 platform is doing the extracting.
+
+### 22.12 Ollama Vision-Model OCR Route (OSS release, step 7)
+
+The second `OCRProvider` implementation §22.11 was written for:
+`mcp_server/ocr_ollama.py`'s `OllamaVisionOCRProvider`, giving
+non-Apple-Silicon platforms real image OCR for the first time — previously
+every image/PDF upload there was "cleanly rejected with an explanatory
+error" (README), since Apple's Vision framework has no equivalent
+elsewhere.
+
+**Images only.** PDFs are unaffected and still require Apple Silicon,
+unconditionally — a deliberate scope decision, not an oversight. Real PDF
+parity would mean un-gating PyMuPDF (currently bundled Apple-Silicon-only
+alongside Vision in the `[ocr]` extra, see §1/`pyproject.toml`) for every
+platform. PyMuPDF is AGPL-3.0 and already flagged in
+`THIRD_PARTY_LICENSES.md` as pending replacement — broadening where that
+dependency runs, ahead of its replacement, is a real license-footprint
+decision that deserves its own scoping pass, not a side effect of adding
+image support. `ocr.py`'s PDF path and `pyproject.toml`'s `[ocr]` extra are
+both untouched by this step.
+
+**Provider selection** happens in `mcp_server/main.py`'s `ocr_extract` tool
+wrapper, not inside `ocr.py` (which stays exactly as `ocr.py` was before
+this step — its own platform gate is reused verbatim for the PDF case):
+
+```python
+if _ocr._is_apple_silicon():
+    return _ocr.extract_text(path, mime_type, max_pdf_pages)
+if mime_type.startswith("image/"):
+    return _ocr_ollama.OllamaVisionOCRProvider().extract_text(path, mime_type, max_pdf_pages)
+return _ocr.extract_text(path, mime_type, max_pdf_pages)  # PDFs: unchanged rejection
+```
+
+Automatic, not user-facing — matches every other platform/opt-in gate in
+this codebase (`EmbeddingEngine`, `chart.py`'s lazy matplotlib import).
+
+**Request shape**: the sandboxed image's bytes are base64-encoded and sent
+as a single non-streaming `POST {base_url}/api/chat` call (Ollama's native
+API, same endpoint/transport conventions as `ollama_runtime_client.py`) —
+one user message with `images: [b64]` and a prompt instructing verbatim
+text transcription only, no commentary or description.
+
+**Why a sentinel value, not just a length check.** Vision's
+`VNRecognizeTextRequest` is a real text-recognition API — a textless image
+produces literally zero output, which `extract_text()`'s existing
+near-empty-length check (`_MIN_EXTRACTED_CHARS`) catches cleanly. A
+general-purpose vision-language model has no equivalent "found nothing"
+signal — asked to describe a textless image, it answers in prose ("I don't
+see any text in this image"), which is not short and would sail past a
+length-only check, silently returning commentary as if it were extracted
+content. The prompt instead asks for an exact sentinel string
+(`NO_TEXT_FOUND`) on no legible text; the response is checked against that
+sentinel (case-insensitive) in addition to the same length threshold, both
+raising the identical `"ERROR: no readable text detected in '<name>' —
+..."` message `ocr.py` already uses — behavior is consistent across
+providers even though the underlying failure signal is different.
+
+**Config**: `LOCALIST_OLLAMA_VISION_MODEL` (no default — a vision-capable
+model the user has pulled locally, e.g. `llava`/`qwen2.5vl`; missing on a
+non-Apple-Silicon platform raises a clear config error, no network call
+attempted) and `LOCALIST_OLLAMA_URL` (default `http://localhost:11434` —
+same variable name/meaning as `main.py`'s `Settings.ollama_url`, read
+independently here since `localist-mcp` is a separate process that doesn't
+share the main backend's `Settings` instance). Both documented in
+`backend/.env.example` and `mcp_server/main.py`'s module docstring.
+
+Errors (missing config, unreachable Ollama, timeout, non-200, unexpected
+response shape) all raise `ValueError` — `OCRProvider`'s contract, not
+`BaseRuntimeClient`'s `RuntimeError` — converted to `isError=True` by the
+MCP protocol layer, same as every other failure mode in this service.
