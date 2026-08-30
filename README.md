@@ -75,6 +75,16 @@ Localist's own code is MIT-licensed (see `LICENSE`), but this downloaded model i
 
 `backend/wiki/` starts empty — see `examples/` for a sample document you can ingest right away to try the raw→wiki pipeline without supplying your own documents first.
 
+### Native macOS app (optional)
+
+`./start_localist.sh` runs from source and is the recommended way to use every feature (MLX
+embeddings, Vision/PyMuPDF OCR). A native `Localist.app` is also buildable — a Tauri shell that
+spawns two PyInstaller-frozen, base-only builds of the backend and localist-mcp (no MLX/Vision/
+PyMuPDF bundled, so those platform-gated features aren't available from the packaged app). See
+`backend/packaging/README.md` (build the two frozen services) then `localist-ui/src-tauri/README.md`
+(build the `.app`). No first-run config UX or code signing yet — a fresh build defaults to the
+unreachable `foundry` runtime backend, same as an unconfigured source install.
+
 ## Configuration
 
 Copy `backend/.env.example` to `backend/.env`. Only an API key for the active `web_search` provider — `LANGSEARCH_API_KEY` by default, or `BRAVE_API_KEY` if you switch providers — is required for full functionality; everything else has a working default.
@@ -199,6 +209,7 @@ Tests are organized by phase (memory substrate, routing, controller dispatch, ex
 - ✅ Cross-platform image OCR — a configured Ollama vision-capable chat model as a second `OCRProvider`, so image uploads work on non-Apple-Silicon platforms too (PDFs still require Apple Silicon)
 - ✅ Per-turn "Save as" — edit any assistant reply in place and save it to disk as `.md`/`.txt`, no model round trip
 - ✅ Compose Mode — accumulate multiple turns into one document in a persistent, drag-resizable side panel, then save the assembled draft as a single file
+- ✅ Native macOS `.app` packaging — both backend services frozen with PyInstaller (base-only: no MLX/Vision/PyMuPDF bundled) and wrapped in a Tauri shell that spawns/kills them; see `backend/packaging/README.md` and `localist-ui/src-tauri/README.md`
 
 **Open**
-- ⬜ macOS `.app` packaging via PyInstaller + Tauri
+- ⬜ Native `.app`: first-run config UX (a fresh app defaults to unreachable `foundry`), code signing/notarization, `tauri build` auto-triggering the PyInstaller build
