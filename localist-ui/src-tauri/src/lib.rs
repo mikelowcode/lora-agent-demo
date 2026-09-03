@@ -13,7 +13,7 @@
 // JSON; Tauri's capability system only gates what the webview can invoke
 // over IPC.
 
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use tauri::path::BaseDirectory;
@@ -33,7 +33,22 @@ fn spawn_sidecar(app: &tauri::AppHandle, resource_relative: &str, label: &str) -
         }
     };
 
-    match Command::new(&path).spawn() {
+    // Launched via `open`/Finder/Dock (LaunchServices), this process' own
+    // stdio is not a terminal — without an explicit Stdio here, the child
+    // inherits those same fds verbatim (Command's default). Reproduced
+    // live: with real wiki/raw data to index (real startup log volume),
+    // the backend sidecar died within ~1s every time under a LaunchServices
+    // launch while the identical binary launched directly from a shell
+    // (inheriting a real tty) started fine every time — an empty first-run
+    // corpus (near-zero startup output) didn't trigger it either way. Null
+    // stdio removes the inherited-fd variable entirely rather than relying
+    // on this process always having a well-behaved stdout/stderr to give.
+    match Command::new(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         Ok(child) => {
             log::info!("{label}: started (pid {})", child.id());
             Some(child)

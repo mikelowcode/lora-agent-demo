@@ -27,6 +27,11 @@
     // routed via POST /chat/files) is still in flight — unlike a text
     // upload's near-instant UTF-8 decode, this has real wall-clock latency.
     extracting?: boolean;
+    // Absolute path to the stable server-side copy POST /chat/files persists
+    // (see main.py's attach_chat_file) — present for uploads, absent for
+    // wiki_pin attachments. Lets ingestAttachedFile() reuse the same
+    // raw_path-based WikiAgent pipeline files.ts's ingestFile() uses.
+    path?: string;
   }
   let attachedFiles: AttachedFile[] = [];
   let fileInputEl: HTMLInputElement;
@@ -111,11 +116,11 @@
       if (isOcrUpload) {
         attachedFiles = attachedFiles.map(f =>
           f.filename === file.name && f.extracting
-            ? { filename: body.filename, tokenEstimate: body.token_estimate }
+            ? { filename: body.filename, tokenEstimate: body.token_estimate, path: body.path }
             : f
         );
       } else {
-        attachedFiles = [...attachedFiles, { filename: body.filename, tokenEstimate: body.token_estimate }];
+        attachedFiles = [...attachedFiles, { filename: body.filename, tokenEstimate: body.token_estimate, path: body.path }];
       }
     } catch (err) {
       if (isOcrUpload) {
@@ -123,6 +128,22 @@
       }
       attachError = 'Could not reach the server. Is the backend running?';
     }
+  }
+
+  // Ingests an attached file into the wiki via the same raw_path-based
+  // WikiAgent pipeline the Files panel's ingest button uses (files.ts's
+  // ingestFile()) — submitted as a normal chat turn so the result appears
+  // in the current conversation rather than navigating away from it.
+  async function ingestAttachedFile(f: AttachedFile) {
+    if (!f.path || submitting || $tasksStore.finalizing) return;
+    // Detach only after the task completes — WikiAgent reads the stable
+    // upload copy server-side while the task is in flight, and detaching
+    // deletes that same copy (see main.py's detach_chat_file).
+    await submitInstruction(
+      `Ingest the file "${f.filename}" into the wiki and produce a research note.`,
+      { raw_path: f.path, auto_apply: true }
+    );
+    await removeAttachedFile(f.filename);
   }
 
   async function removeAttachedFile(filename: string) {
@@ -205,12 +226,14 @@
     }
   }
 
-  async function handleSubmit() {
-    const text = instruction.trim();
-    if (!text || submitting || $tasksStore.finalizing) return;
-
+  // Pushes a user turn + a placeholder assistant turn, then submits the
+  // task with the given context. Shared by handleSubmit() (context: {}) and
+  // ingestAttachedFile() (context: { raw_path, auto_apply: true }) — the
+  // same raw_path-based route files.ts's ingestFile() uses from the Files
+  // panel, so a chat-attached file goes through the identical, working
+  // WikiAgent ingestion pipeline.
+  async function submitInstruction(text: string, context: Record<string, unknown>) {
     submitting = true;
-    instruction = '';
     await tick();
     autoResizeTextarea();
 
@@ -244,9 +267,17 @@
     ]);
     await scrollToBottom();
 
-    await submitTask(text, {}, task_id, conversationId, conversationTitle);
+    await submitTask(text, context, task_id, conversationId, conversationTitle);
 
     submitting = false;
+  }
+
+  async function handleSubmit() {
+    const text = instruction.trim();
+    if (!text || submitting || $tasksStore.finalizing) return;
+
+    instruction = '';
+    await submitInstruction(text, {});
     inputEl?.focus();
   }
 
@@ -588,6 +619,19 @@
               {/if}
               <span class="file-pill-name" title={f.filename}>{f.filename}</span>
               <span class="file-pill-tokens">~{f.tokenEstimate.toLocaleString()}t</span>
+              {#if f.path}
+                <button
+                  class="file-pill-ingest"
+                  on:click={() => ingestAttachedFile(f)}
+                  disabled={submitting || $tasksStore.finalizing}
+                  aria-label="Ingest {f.filename} into wiki"
+                  title="Ingest into wiki"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 20V10M12 4v2M6 12l6-6 6 6"/>
+                  </svg>
+                </button>
+              {/if}
               <button
                 class="file-pill-remove"
                 on:click={() => removeAttachedFile(f.filename)}
@@ -1015,7 +1059,8 @@
     flex-shrink: 0;
   }
 
-  .file-pill-remove {
+  .file-pill-remove,
+  .file-pill-ingest {
     display: flex;
     align-items: center;
     color: var(--text-muted);
@@ -1024,6 +1069,8 @@
     transition: color var(--dur-fast) var(--ease);
   }
   .file-pill-remove:hover { color: var(--error); }
+  .file-pill-ingest:hover:not(:disabled) { color: var(--accent); }
+  .file-pill-ingest:disabled { opacity: 0.4; cursor: default; }
 
   .attach-error {
     font-size: 11px;

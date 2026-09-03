@@ -591,11 +591,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("LOCAL_PROFILE RAM headroom check: %s", ram["message"])
 
     # -- Resolve path defaults -----------------------------------------------
+    # Each LOCALIST_* path override is documented as an absolute path, but
+    # nothing enforced that — a relative value (e.g. dev's .env historically
+    # setting LOCALIST_MEMORY_DB=localist_memory.db, a bare filename) stayed
+    # relative to Path.cwd() wherever this process happened to be launched
+    # from. That's silently wrong-but-harmless from a shell (creates/opens
+    # an empty stray db next to wherever you cd'd), and fatal when launched
+    # via LaunchServices (open/Finder/Dock, cwd defaults to "/" — no write
+    # access, so sqlite3.connect() raises during MemoryManager.__init__ and
+    # the process exits before it can log anything). _resolve_configured_path
+    # makes "absolute" actually true: pass an absolute override through
+    # unchanged, join a relative one onto root instead of leaving it
+    # cwd-dependent, same as an unset value already resolved.
 
-    wiki_dir      = Path(settings.wiki_dir)      if settings.wiki_dir      else project_root / "wiki"
-    raw_dir       = Path(settings.raw_dir)       if settings.raw_dir       else project_root / "raw"
-    generated_dir = Path(settings.generated_dir) if settings.generated_dir else project_root / "generated_files"
-    memory_db     = Path(settings.memory_db)     if settings.memory_db     else project_root / "localist_memory.db"
+    wiki_dir      = _resolve_configured_path(settings.wiki_dir,      project_root, "wiki")
+    raw_dir       = _resolve_configured_path(settings.raw_dir,       project_root, "raw")
+    generated_dir = _resolve_configured_path(settings.generated_dir, project_root, "generated_files")
+    memory_db     = _resolve_configured_path(settings.memory_db,     project_root, "localist_memory.db")
     # Created if missing — in the source tree these are already guaranteed
     # to exist via git-tracked .gitkeep files, but a frozen build's fresh
     # ~/Library/Application Support/Localist has nothing playing that role;
@@ -608,8 +620,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # (not user data) — resource_root, not project_root, so a frozen build
     # finds them inside its own bundle rather than an empty data directory.
     resource_root = get_resource_root()
-    schema_path   = Path(settings.schema_path)   if settings.schema_path   else resource_root / "SCHEMA.md"
-    templates_dir = Path(settings.templates_dir) if settings.templates_dir else resource_root / "templates"
+    schema_path   = _resolve_configured_path(settings.schema_path,   resource_root, "SCHEMA.md")
+    templates_dir = _resolve_configured_path(settings.templates_dir, resource_root, "templates")
 
     # -- Embedding source selection -------------------------------------------
     # See _configure_embedding_source() for the three-tier precedence rules
@@ -1215,6 +1227,22 @@ def _require_memory_manager() -> MemoryManager:
     if _state.memory_manager is None:
         raise HTTPException(status_code=503, detail="MemoryManager not initialised.")
     return _state.memory_manager
+
+
+def _resolve_configured_path(value: str | None, root: Path, filename: str) -> Path:
+    """
+    Resolve one LOCALIST_* path override against root, rather than trusting
+    it's already absolute (documented, not previously enforced — see the
+    call site's comment in the startup path-resolution block).
+
+    Unset/empty -> root/filename (existing default behaviour, unchanged).
+    Absolute value -> passed through unchanged (existing behaviour).
+    Relative value -> joined onto root instead of staying Path.cwd()-relative.
+    """
+    if not value:
+        return root / filename
+    p = Path(value)
+    return p if p.is_absolute() else root / p
 
 
 def _enrich_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -2410,7 +2438,16 @@ async def attach_chat_file(file: UploadFile = File(...)):
     session_files budget, no separate image cache). See
     docs/architecture/22-local-ocr-service.md.
 
-    Returns 200 + {filename, token_estimate} on success.
+    Also persists a stable copy of the raw bytes under chat_uploads/ (same
+    sandbox root as ocr_extract's own temp files, distinct from that
+    per-request temp file — this one outlives the request) so the response's
+    `path` can be used directly as context.raw_path for a follow-up
+    WikiAgent ingest (see ChatPanel.svelte's ingestAttachedFile) — the same
+    raw_path-based route files.ts's ingestFile() already uses from the Files
+    panel. Removed by DELETE /chat/files/{filename} (detach_chat_file), same
+    as the session_files cache entry it accompanies.
+
+    Returns 200 + {filename, token_estimate, path} on success.
     Returns 400 + {detail} on rejection (type, size, or budget).
     Returns 422 on encoding failure (binary/non-UTF-8 text file) or OCR
     failure (unsupported/unreadable image or PDF).
@@ -2433,9 +2470,14 @@ async def attach_chat_file(file: UploadFile = File(...)):
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    stable_name = os.path.basename(file.filename or f"upload-{uuid.uuid4().hex}")
+    stable_path = _ocr_upload_root() / stable_name
+    stable_path.write_bytes(raw)
+
     return {
         "filename":       file.filename,
         "token_estimate": len(content) // 4,
+        "path":           str(stable_path),
     }
 
 
@@ -2444,12 +2486,18 @@ async def detach_chat_file(filename: str):
     """
     Remove a file from the ephemeral session file cache by filename.
 
+    Also unlinks the stable chat_uploads/ copy attach_chat_file persists for
+    upload attachments (a no-op for wiki_pin attachments, which never get
+    one). Best-effort — a missing file on disk doesn't fail the request.
+
     Returns 200 + {removed: true} if found and removed.
     Returns 404 if the filename was not in the cache.
     """
     removed = session_files.remove_file(filename)
     if not removed:
         raise HTTPException(status_code=404, detail=f"'{filename}' not found in session files.")
+    stable_name = os.path.basename(filename)
+    (_ocr_upload_root() / stable_name).unlink(missing_ok=True)
     return {"removed": True}
 
 

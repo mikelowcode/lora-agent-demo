@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { get, type Writable } from 'svelte/store';
   import { browser } from '$app/environment';
   import { apiUrl } from '$lib/api';
   import { page } from '$app/stores';
@@ -283,13 +284,36 @@
     e.preventDefault();
   }
 
+  // Sidebar mounts with the root layout — essentially the instant the
+  // webview loads its bundled static assets. The Tauri-packaged backend is
+  // a separate child process still starting up at that point (real Python
+  // process/module-import/port-bind time, ~0.5-1s observed with a populated
+  // wiki/raw corpus to index) — a fetch fired from onMount can easily lose
+  // that race, and since App.tsx-style stores never fixed on their own, one
+  // lost race meant "Load failed" stuck in the sidebar for the rest of the
+  // session. Retries a few times with a short delay so the common case
+  // (backend simply not up yet) self-heals; genuinely down still ends in the
+  // same "Load failed" state after retries are exhausted.
+  async function loadWithRetry(
+    load:       () => Promise<void>,
+    errorStore: Writable<string | null>,
+    retries = 4,
+    delayMs = 500,
+  ): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      await load();
+      if (get(errorStore) === null) return;
+      if (attempt < retries) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+
   onMount(() => {
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     refreshPendingCount();
-    loadWikiFiles();
-    loadRawFiles();
-    loadGeneratedFiles();
+    loadWithRetry(loadWikiFiles,      wikiError);
+    loadWithRetry(loadRawFiles,       rawError);
+    loadWithRetry(loadGeneratedFiles, generatedError);
   });
 
   onDestroy(() => {
@@ -494,7 +518,10 @@
                 {#if grp.loading}
                   <p class="sub-nav-state">Loading…</p>
                 {:else if grp.error}
-                  <p class="sub-nav-state" style="color:var(--error)">{grp.error}</p>
+                  <p class="sub-nav-state" style="color:var(--error)">
+                    {grp.error}
+                    <button type="button" class="fg-retry" on:click={grp.refresh}>Retry</button>
+                  </p>
                 {:else if grp.files.length === 0}
                   <p class="sub-nav-state">No files.</p>
                 {:else}
@@ -782,6 +809,15 @@
     font-size: 11px;
     color: var(--text-tertiary);
   }
+
+  .fg-retry {
+    margin-left: 6px;
+    font-size: 11px;
+    color: inherit;
+    text-decoration: underline;
+    opacity: 0.8;
+  }
+  .fg-retry:hover { opacity: 1; }
 
   /* Chat sub-nav: conversation row + hover-revealed delete button */
   .conversation-row {

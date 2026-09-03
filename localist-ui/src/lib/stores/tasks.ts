@@ -228,7 +228,16 @@ export function submitTask(
             if (!line.startsWith('data: ')) continue;
             const raw = line.slice(6).trim();
             if (raw === '[DONE]') {
-              patchTask(id, { status: 'complete', completed_at: Date.now() });
+              // [DONE] is the stream's unconditional terminating sentinel —
+              // it follows a preceding 'error' event just as reliably as a
+              // successful one (see post_task_stream in main.py), so it must
+              // not stomp a status the 'error' handler already set to
+              // 'failed' moments earlier. Only 'planning'/'streaming' (never
+              // patched to a terminal state) advance to 'complete' here.
+              const current = get(tasksStore).tasks[id];
+              if (current && current.status !== 'failed') {
+                patchTask(id, { status: 'complete', completed_at: Date.now() });
+              }
               // task_complete should already have cleared `finalizing` — this
               // is a fail-safe in case the stream closes without it, so
               // input never stays disabled indefinitely.
