@@ -1683,6 +1683,95 @@ class TestTunedEmbeddingModelGuard:
         assert result is not None
 
 
+class TestValidatedModelThresholds:
+    """
+    Unit tests for _VALIDATED_MODEL_THRESHOLDS (docs/architecture/
+    16-runtime-backend-layer.md §16.15): a mismatched embedding model with
+    its own independently-measured threshold set uses that set instead of
+    being disabled outright — the escape hatch from
+    TestTunedEmbeddingModelGuard's all-or-nothing behavior.
+    """
+
+    def _matching_vec_planner(self, **kwargs) -> "Planner":
+        fixed_vec = _unit_vector(8)
+        embed_fn = MagicMock(return_value=fixed_vec)
+        return Planner(runtime=make_runtime(), embed_fn=embed_fn, **kwargs)
+
+    def test_validated_model_does_not_disable_gating(self, caplog):
+        with caplog.at_level(logging.INFO, logger="localist.planner"):
+            p = self._matching_vec_planner(embedding_model_name="nomic-embed-text:latest")
+
+        assert p._semantic_gating_disabled is False
+        assert "validated threshold set" in caplog.text
+        assert "nomic-embed-text:latest" in caplog.text
+
+    def test_validated_model_uses_its_own_thresholds_not_the_tuned_models(self):
+        from localist.planner import _VALIDATED_MODEL_THRESHOLDS, _SEMANTIC_GATE_THRESHOLDS
+
+        p = self._matching_vec_planner(embedding_model_name="nomic-embed-text:latest")
+        validated = _VALIDATED_MODEL_THRESHOLDS["nomic-embed-text:latest"]
+
+        assert p._semantic_gate_thresholds == {
+            "explicit_search_action": validated["explicit_search_action"],
+            "lookup_request":         validated["lookup_request"],
+        }
+        assert p._research_intent_threshold == validated["research_intent"]
+        assert p._episodic_relevance_threshold == validated["episodic_relevance"]
+        # Sanity: this model's values are genuinely different from the tuned
+        # model's own — otherwise this test wouldn't distinguish "uses its
+        # own set" from "coincidentally matches the default".
+        assert validated["lookup_request"] != _SEMANTIC_GATE_THRESHOLDS["lookup_request"]
+
+    def test_validated_model_still_gates_via_its_own_threshold(self):
+        # A score that clears the tuned model's lookup_request threshold
+        # (0.60) but not nomic-embed-text:latest's validated one (0.62)
+        # must NOT fire under the validated model — proving the instance
+        # actually reads _semantic_gate_thresholds at scoring time, not
+        # just stores it unused.
+        fixed_vec = _unit_vector(8)  # every template embeds to this at construction
+        embed_fn = MagicMock(return_value=fixed_vec)
+        p = Planner(
+            runtime=make_runtime(), embed_fn=embed_fn,
+            embedding_model_name="nomic-embed-text:latest",
+        )
+        assert p._semantic_gate_thresholds["lookup_request"] == 0.62
+
+        # Every group's templates equal fixed_vec (embed_fn is constant), so
+        # every group's score equals cosine(query_vec, fixed_vec) uniformly.
+        # Construct query_vec = target_cos * fixed_vec + sin * orthogonal,
+        # both unit vectors, for an exact, known cosine similarity.
+        orthogonal_unit = [1 / math.sqrt(2), -1 / math.sqrt(2)] + [0.0] * 6
+        target_cos = 0.61
+        sin_component = math.sqrt(1 - target_cos ** 2)
+        query_vec = [
+            target_cos * a + sin_component * b
+            for a, b in zip(fixed_vec, orthogonal_unit)
+        ]
+        embed_fn.return_value = query_vec
+
+        result = p._semantic_search_intent("look up this")
+        assert result is not None
+        _, _, all_scores = result
+        assert 0.605 <= all_scores["lookup_request"] <= 0.615
+
+        fired = [
+            group for group, threshold in p._semantic_gate_thresholds.items()
+            if all_scores.get(group, 0.0) >= threshold
+        ]
+        assert "lookup_request" not in fired  # 0.61 < validated 0.62
+
+    def test_unvalidated_mismatched_model_still_fully_disabled(self, caplog):
+        """Regression guard: only models with an entry in
+        _VALIDATED_MODEL_THRESHOLDS get the escape hatch — any other
+        mismatched model keeps TestTunedEmbeddingModelGuard's original
+        fail-closed (fully disabled) behavior."""
+        with caplog.at_level(logging.WARNING, logger="localist.planner"):
+            p = self._matching_vec_planner(embedding_model_name="some-other-model")
+
+        assert p._semantic_gating_disabled is True
+        assert "no validated threshold set of its own" in caplog.text
+
+
 class TestSemanticSearchIntentDiag2:
     """Diagnostic Slot 2 additions — per-group score dict shape and correctness."""
 

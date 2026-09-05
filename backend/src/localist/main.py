@@ -829,6 +829,7 @@ class HealthResponse(BaseModel):
     models:            list[str]  = Field(default_factory=list)
     chat_model_found:  bool       = False
     embed_model_found: bool       = False
+    embedding_model:   str        = ""
     error:             str | None = None
 
 
@@ -881,6 +882,25 @@ class ChatModelPinResponse(BaseModel):
     chat_model:   str
     persisted:    bool
     applied_live: bool
+
+
+class EmbeddingModelRequest(BaseModel):
+    """
+    Payload accepted by POST /settings/embedding-model. An empty model
+    clears the runtime-backend embedding tier (falls back to EmbeddingEngine
+    if enabled/available, else keyword-only).
+    """
+    model: str = ""
+
+
+class EmbeddingModelResponse(BaseModel):
+    """Response body for POST /settings/embedding-model."""
+    backend:   str
+    model:     str
+    persisted: bool
+    active:    bool
+    reachable: bool
+    error:     str | None = None
 
 
 class MemoryStatsResponse(BaseModel):
@@ -1114,13 +1134,27 @@ class HackerNewsOpenResponse(BaseModel):
 
 
 class RetentionSettingsResponse(BaseModel):
-    """Response body for GET/PUT /settings/retention."""
-    eviction_preset: str | None = None
+    """
+    Response body for GET/PUT /settings/retention.
+
+    Two independent presets as of §20.12 (docs/architecture/
+    16-runtime-backend-layer.md) — eviction_preset governs chat_turns only;
+    episode_eviction_preset governs episodes only and always has a concrete
+    value ("forever" by default, never null) since episodic memory doesn't
+    inherit chat-history's TTL.
+    """
+    eviction_preset:         str | None = None
+    episode_eviction_preset: str        = "forever"
 
 
 class RetentionSettingsRequest(BaseModel):
-    """Payload accepted by PUT /settings/retention."""
-    eviction_preset: Literal["7d", "30d", "90d", "forever"]
+    """
+    Payload accepted by PUT /settings/retention. Both fields optional and
+    independent — only the ones provided are updated; omitting one leaves
+    its current stored value untouched rather than resetting it.
+    """
+    eviction_preset:         Literal["7d", "30d", "90d", "forever"] | None = None
+    episode_eviction_preset: Literal["7d", "30d", "90d", "forever"] | None = None
 
 
 class AssistantNameResponse(BaseModel):
@@ -1439,6 +1473,7 @@ async def get_health() -> HealthResponse:
         models            = raw.get("models", []),
         chat_model_found  = bool(raw.get("chat_model_found", False)),
         embed_model_found = embed_available,
+        embedding_model   = settings.embedding_model if settings is not None else "",
         error             = raw.get("error"),
     )
 
@@ -1481,6 +1516,31 @@ def _create_and_check_backend(settings: Settings, backend: str) -> tuple[BaseRun
         backend         = backend,
         chat_model      = chat_model,
         embedding_model = settings.embedding_model,
+        foundry_url     = settings.foundry_url,
+        omlx_url        = settings.omlx_url,
+        ollama_url      = settings.ollama_url,
+        request_timeout = settings.request_timeout,
+        stream_timeout  = settings.stream_timeout,
+    )
+    return candidate_runtime, candidate_runtime.health_check()
+
+
+def _create_and_check_embedding_candidate(
+    settings: Settings, backend: str, embedding_model: str,
+) -> tuple[BaseRuntimeClient, dict]:
+    """
+    Build a runtime client for `backend` with `embedding_model` set (instead
+    of settings.embedding_model) and health-check it. Blocking — run via
+    asyncio.to_thread. Mirrors _create_and_check_backend() above, but
+    overrides embedding_model instead of backend — used by
+    POST /settings/embedding-model to validate a candidate embedding model
+    against the currently active backend before committing anything.
+    """
+    chat_model = _resolve_chat_model(settings, backend)
+    candidate_runtime = create_runtime(
+        backend         = backend,
+        chat_model      = chat_model,
+        embedding_model = embedding_model,
         foundry_url     = settings.foundry_url,
         omlx_url        = settings.omlx_url,
         ollama_url      = settings.ollama_url,
@@ -1669,6 +1729,137 @@ async def set_runtime_backend_chat_model(
         chat_model   = request.chat_model,
         persisted    = True,
         applied_live = applied_live,
+    )
+
+
+@app.post(
+    "/settings/embedding-model",
+    response_model = EmbeddingModelResponse,
+    summary        = "Set (or clear) the active runtime backend's embedding model",
+)
+async def set_embedding_model(request: EmbeddingModelRequest) -> EmbeddingModelResponse:
+    """
+    Configure MemoryManager's embedding source to use the active runtime
+    backend's embed() with `model` — tier 1 of _configure_embedding_source()'s
+    three-tier precedence (docs/architecture/16-runtime-backend-layer.md
+    §16.4). An empty model clears the runtime-backend embedding tier,
+    falling back to EmbeddingEngine (if enabled and available) or
+    keyword-only — mirrors what an unset LOCALIST_EMBEDDING_MODEL does at
+    startup; it does not attempt to newly load EmbeddingEngine live.
+
+    oMLX is rejected up front — runtime_factory._make_omlx() hardcodes
+    embedding_model="" regardless of what's requested here (a known,
+    separately-tracked gap, §16.4), so a health-check-based "model not
+    found" error would be misleading about the actual cause.
+
+    Health-checks the candidate model against the currently active backend
+    before committing anything — an unreachable backend or a model it
+    doesn't report leaves the existing embedding source untouched.
+    Rebuilds the controller under the same lock a runtime-backend switch
+    uses, so _state.runtime/.wiki_agent/.controller/MemoryManager.embed_fn
+    all move together and GET /health's embed_model_found reflects the
+    change immediately — even though the chat backend/model themselves are
+    unchanged by this endpoint.
+    """
+    settings       = _require_settings()
+    memory_manager = _require_memory_manager()
+    backend        = settings.runtime_backend.strip().lower()
+    model          = request.model.strip()
+
+    if backend == "omlx":
+        raise HTTPException(
+            status_code = 409,
+            detail      = (
+                "oMLX does not support a configurable embedding model yet "
+                "(docs/architecture/16-runtime-backend-layer.md §16.4) — "
+                "switch to Ollama or Foundry first."
+            ),
+        )
+
+    async with _runtime_switch_lock:
+        candidate_runtime, health = await asyncio.to_thread(
+            _create_and_check_embedding_candidate, settings, backend, model,
+        )
+
+        if not health.get("reachable"):
+            raise HTTPException(
+                status_code = 502,
+                detail      = (
+                    f"Backend {backend!r} is not reachable at "
+                    f"{health.get('base_url')!r} — embedding model not changed."
+                ),
+            )
+        if model and not health.get("embed_model_found"):
+            raise HTTPException(
+                status_code = 422,
+                detail      = (
+                    f"Model {model!r} not found on {backend!r} (available: "
+                    f"{', '.join(health.get('models', [])) or 'none reported'}) — "
+                    f"embedding model not changed."
+                ),
+            )
+
+        settings.embedding_model = model
+        if model:
+            # Tier 1 (runtime-backend embed) engaged — mutually exclusive with
+            # tier 2 (_configure_embedding_source()'s own invariant), so an
+            # EmbeddingEngine left over from startup must not be consulted for
+            # naming here even though _state.embedding_engine itself is left
+            # untouched (still holds whatever lifespan() constructed, in case
+            # this model is cleared later).
+            embed_fn = candidate_runtime.embed
+            embedding_engine_for_name = None
+        else:
+            # Clearing tier 1 falls back to tier 2 (EmbeddingEngine) if it was
+            # already loaded and available at startup, exactly like an unset
+            # LOCALIST_EMBEDDING_MODEL would at boot — not straight to
+            # keyword-only, which would silently disable working embeddings.
+            embedding_engine = _state.embedding_engine
+            embed_fn = (
+                embedding_engine.embed
+                if embedding_engine is not None and embedding_engine.available
+                else None
+            )
+            embedding_engine_for_name = embedding_engine
+
+        embedding_model_name = _derive_active_embedding_model_name(
+            settings, embed_fn, embedding_engine_for_name,
+        )
+        # Pass the *derived* name, not the raw `model` string — when clearing
+        # falls back to tier 2 above, the vectors are actually produced by
+        # embedding_engine.model_path, not None; provenance checking against
+        # the wrong (or a missing) name would silently skip a real mismatch.
+        memory_manager.set_embedding_source(embed_fn, embedding_model_name)
+        _state.active_embedding_model_name = embedding_model_name
+
+        wiki_agent, _conversational_agent, controller = await asyncio.to_thread(
+            _build_controller,
+            settings, candidate_runtime, memory_manager, embed_fn,
+            _PROJECT_ROOT, _state.templates_dir, embedding_model_name,
+        )
+
+        _state.runtime    = candidate_runtime
+        _state.wiki_agent = wiki_agent
+        _state.controller = controller
+
+        persisted: bool = True
+        error: str | None = None
+        try:
+            _write_env_var(_PROJECT_ROOT, "LOCALIST_EMBEDDING_MODEL", model)
+        except OSError as exc:
+            persisted = False
+            error = (
+                f"Embedding model switched in-process, but writing .env failed "
+                f"({exc}) — it will revert to the previous value on next restart."
+            )
+
+    return EmbeddingModelResponse(
+        backend   = backend,
+        model     = model,
+        persisted = persisted,
+        active    = bool(embed_fn),
+        reachable = True,
+        error     = error,
     )
 
 
@@ -2546,40 +2737,57 @@ async def pin_wiki_page(body: PinWikiPageRequest):
 @app.get(
     "/settings/retention",
     response_model = RetentionSettingsResponse,
-    summary        = "Read the global retention preset",
+    summary        = "Read the chat_turns and episode retention presets",
 )
 async def get_retention_settings() -> RetentionSettingsResponse:
     """
-    Return the current global retention preset.
+    Return the current chat_turns and episode retention presets —
+    independent of each other as of §20.12.
 
-    ``eviction_preset`` is None when the user has never set one.
+    ``eviction_preset`` is None when the user has never set one (chat_turns
+    default: keep everything). ``episode_eviction_preset`` is always a
+    concrete value, defaulting to "forever".
     """
     mm = _require_memory_manager()
-    preset = await asyncio.to_thread(mm.get_retention_preset)
-    return RetentionSettingsResponse(eviction_preset=preset)
+    chat_preset    = await asyncio.to_thread(mm.get_retention_preset)
+    episode_preset = await asyncio.to_thread(mm.get_episode_retention_preset)
+    return RetentionSettingsResponse(
+        eviction_preset         = chat_preset,
+        episode_eviction_preset = episode_preset,
+    )
 
 
 @app.put(
     "/settings/retention",
     response_model = RetentionSettingsResponse,
-    summary        = "Set the global retention preset",
+    summary        = "Set the chat_turns and/or episode retention preset",
 )
 async def put_retention_settings(
     request: RetentionSettingsRequest,
 ) -> RetentionSettingsResponse:
     """
-    Set the global retention preset.
-
-    Governs both chat_turns (hard-deleted) and episodes (soft-retracted via
-    status='retracted') once the TTL sweep runs. The sweep itself only runs
+    Set the chat_turns and/or episode retention preset independently
+    (§20.12) — chat_turns is hard-deleted, episodes are soft-retracted via
+    status='retracted', once the TTL sweep runs. The sweep itself only runs
     at backend startup (MemoryManager.sweep_expired_memory(), called from
-    lifespan()) — this endpoint only persists the preference and returns the
-    value re-read from the database to confirm the write landed.
+    lifespan()) — this endpoint only persists the preference(s) and returns
+    the values re-read from the database to confirm the write(s) landed.
+
+    Only the field(s) present on the request are updated; omitting one
+    leaves its current stored value untouched.
     """
     mm = _require_memory_manager()
-    await asyncio.to_thread(mm.set_retention_preset, request.eviction_preset)
-    preset = await asyncio.to_thread(mm.get_retention_preset)
-    return RetentionSettingsResponse(eviction_preset=preset)
+    if request.eviction_preset is not None:
+        await asyncio.to_thread(mm.set_retention_preset, request.eviction_preset)
+    if request.episode_eviction_preset is not None:
+        await asyncio.to_thread(mm.set_episode_retention_preset, request.episode_eviction_preset)
+
+    chat_preset    = await asyncio.to_thread(mm.get_retention_preset)
+    episode_preset = await asyncio.to_thread(mm.get_episode_retention_preset)
+    return RetentionSettingsResponse(
+        eviction_preset         = chat_preset,
+        episode_eviction_preset = episode_preset,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -436,6 +436,31 @@ when `MemoryManager._corpus_stale` is set. On success the card shows "Re-embedde
 documents."; on failure it shows `reembedError` in `var(--error)`, same as the Runtime Backend
 card's error paragraph.
 
+**Embedding Model (2026-09-05, §16.14).** New card directly below Chat Model, shown only when
+`$modelConfig.backend === 'ollama'` (the real active backend, not the Chat Model card's preview-only
+`selectedUiBackend` — an embedding-model switch always targets whichever backend is actually live).
+A `<select>` sourced from the same `fetchBackendModels()` used by Chat Model, `onchange` calling a
+new `embeddingModelSwitch.ts` store's `setEmbeddingModel()` against `POST /settings/embedding-model`.
+Closes the gap the "Embedding model ID" field's 2026-07-15 deletion above left open — that field was
+removed for being inert everywhere; this replacement is wired to a real, working backend path (tier
+1 of §16.4's precedence) and was specifically motivated by the packaged Tauri desktop build, whose
+base-only PyInstaller freeze has no MLX `EmbeddingEngine` available at all, leaving Ollama's
+`/api/embed` as the only local-embedding option that build can offer. Selected value reflects a new
+`embedding_model` field on `GET /health` (there was previously no GET surface for the configured
+value, only the boolean `embed_model_found`). oMLX and Foundry are both left out of the UI for this
+pass — oMLX per its documented backend-side gap (§16.4), Foundry as a smaller audience scoped out
+rather than built speculatively even though the backend endpoint supports it identically to Ollama.
+
+**Episode Browsing — Superseded filter + total count (2026-09-05).** `EpisodesPanel.svelte` gained a
+"Superseded" filter chip alongside the existing All/type/Pending/Retracted chips, and a total-episode
+count (`allEpisodesTotal` in `episodes.ts`, sourced from `GET /memory/episodes?status=all&limit=1`)
+shown next to the panel title regardless of the active filter. Motivated by a support case where a
+user migrating their SQLite DB into the desktop build saw only 3 (of 68) episodes and suspected data
+loss on transfer — the data had transferred completely; the UI simply had no way to see anything
+outside the default `status=active` filter, and no chip at all for the `superseded` status
+(`_supersede_existing()`'s normal fact-replacement lifecycle, not an error state). No backend change
+needed — `status=superseded`/`status=all` already existed on `GET /memory/episodes`.
+
 **Files.** See §7.11.
 
 **Verification posture.** `npm run check` and a production `npm run build` both clean throughout.

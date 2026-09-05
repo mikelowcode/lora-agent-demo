@@ -9,6 +9,7 @@ export interface HealthState {
   models: string[];
   chat_model_found: boolean;
   embed_model_found: boolean;
+  embedding_model: string;
   error?: string;
   last_checked: number | null;
   checking: boolean;
@@ -27,6 +28,7 @@ const initialHealth: HealthState = {
   models: [],
   chat_model_found: false,
   embed_model_found: false,
+  embedding_model: '',
   last_checked: null,
   checking: false
 };

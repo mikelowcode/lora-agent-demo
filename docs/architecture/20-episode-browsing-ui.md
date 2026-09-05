@@ -176,6 +176,12 @@ still open, not introduced by this feature). Verified via `svelte-check` (0 erro
 
 ### 20.10 Global Retention TTL (2026-07-31)
 
+> **Superseded in part by §20.12 (2026-09-05).** The "one shared global preset, not two" decision
+> below was reversed after a live incident showed the shared preset silently retracting a still-true
+> episode purely because it aged past the chat-history TTL. `eviction_preset` (chat_turns) and the
+> new `episode_eviction_preset` (episodes) are now independent. The narrative below is retained as
+> the historical record of what was decided and why at the time; §20.12 is the current-state record.
+
 The user had Chat History's 7-day retention preset set in Settings and asked for the same TTL
 control over episodes (808 saved at the time). Investigation found the existing preset was stored
 but **never enforced** — no sweep existed anywhere in the codebase (§12.7's now-closed Open Item 1)
@@ -261,3 +267,80 @@ treated the same as retract()-retracted ones, supersede-on-reactivate, MEMORY.md
 `backend/tests/test_main_memory_episodes.py`'s new `TestReactivateEndpoint`/
 `TestReactivateEndpointGraphHook` classes (endpoint-level, mirroring the existing
 `TestApproveEndpoint`/`TestApproveEndpointGraphHook` structure). Full suite: 1390 passed, 0 failed.
+
+### 20.12 Retention Presets Decoupled — Chat History vs. Episodic Memory (2026-09-05)
+
+Reverses §20.10's "one shared global preset, not two" decision, per explicit user request after a
+live incident: the user's Chat History TTL (`30d`) had also been silently retracting a still-true,
+still-in-use episode ("the user games on an Xbox Series X", last accessed a month after creation)
+purely because it crossed the 30-day `created_at` cutoff — the sweep has no way to tell "this is
+genuinely stale" from "this is a durable fact nobody happened to chat about recently." The user's
+framing: chat history is safe to discard once it ages out, but episodic memory should default to
+being *more* durable than that, not bound to the same clock.
+
+**Two independent presets, not one.** `retention_settings` gains a second column,
+`episode_eviction_preset` (schema v16) — `eviction_preset` (unchanged column name) now governs
+`chat_turns` only; `episode_eviction_preset` governs `episodes` only. `MemoryManager.
+sweep_expired_memory()` reads and applies both independently: each table's sweep no-ops on its own
+table when that table's preset is unset/`"forever"`, regardless of what the other preset is set to.
+
+**New default: episodes = `"forever"`, always a concrete value.** Unlike `eviction_preset`
+(`None` when never set, meaning "no sweep" — unchanged), `get_episode_retention_preset()` always
+returns a real string, defaulting to `"forever"` rather than `None`, since "forever" is an explicit
+product decision here, not merely "unset." This is a deliberate, immediate behavior change on
+migration, not just a default for fresh installs: an existing install with `eviction_preset="30d"`
+(previously governing both tables) keeps that value for `chat_turns` unchanged, but its episodes
+stop being swept at all going forward, without any action required from the user — confirmed live
+against the real reporting user's own database (`schema_version` 15→16, `eviction_preset` value
+`'30d'` preserved byte-for-byte, `episode_eviction_preset` newly present and set to `'forever'`).
+The alternative (preserving the coupled `30d` behavior for episodes too, requiring the user to
+manually opt into the new independent setting) was considered and rejected — it would have silently
+kept doing the exact thing they'd just reported as a problem until they discovered and changed a
+setting they didn't know existed yet.
+
+**Migration, not a fresh table.** `_SCHEMA_VERSION` 15→16. Three self-heal/creation sites updated,
+mirroring this file's established multi-point pattern for every prior schema addition: the
+fresh-install DDL block in `_init_db()` (adds the column directly), the unconditional self-heal
+section that runs on every startup regardless of migration path (`PRAGMA table_info` check +
+`ALTER TABLE` if missing — catches the "reload landed mid-edit between the version bump and the
+migration block" scenario a previous session's `news_preferences` incident already established a
+precedent for), and the `_migrate()` version-gated `if from_version < 16` block for real upgrading
+installs (defensively `CREATE TABLE IF NOT EXISTS` first, same posture as the v13 block, since a
+synthetic/minimal test fixture — or in principle a real DB that skipped an intermediate migration —
+can't be assumed to already have the table just because its reported version implies it should).
+
+**API.** `GET`/`PUT /settings/retention` (`main.py`) unchanged in path, extended in shape:
+`RetentionSettingsResponse` gains `episode_eviction_preset: str` (default `"forever"`, always
+concrete); `RetentionSettingsRequest`'s `eviction_preset` changed from required to `Optional`
+alongside the new optional `episode_eviction_preset` — a `PUT` updates only the field(s) present in
+the request body, leaving the other's stored value untouched. This partial-update shape (rather than
+requiring both fields on every call) was chosen so the two Settings UI controls can each fire their
+own independent request without needing to know or re-send the other's current value.
+
+**Frontend.** `retentionSettings.ts`'s `RetentionSettingsState` gains `episode_eviction_preset`; a
+new `setEpisodeRetentionPreset()` mirrors `setRetentionPreset()`'s existing failure posture (no
+optimistic update — state reflects the server's actual last-known value only). The single "Data
+Retention" card on `/settings` (§7.10) becomes two clearly-labeled segmented controls in one card
+("Chat History" / "Episodic Memory") rather than two separate cards, since they're still one
+conceptual settings area, just no longer one literal shared value — each reuses the same
+`EVICTION_PRESETS` option list and the existing `.segmented`/`.seg-btn` styling, no new CSS.
+
+**Test coverage.** `backend/tests/test_retention_sweep.py`: existing coupled-behavior tests updated
+to set both presets explicitly where that's genuinely what they're testing; new
+`TestPresetsAreIndependent` (setting one preset never touches the other table, in either direction;
+different values for each are honored independently), `TestEpisodeRetentionPresetAccessors` (direct
+get/set unit tests, mirroring `test_chat_turns_schema.py`'s chat-side coverage), and
+`TestSchemaV16Migration` (a real v15 on-disk database — not a mock — with an existing
+`eviction_preset='30d'` row, migrated by opening it with `MemoryManager`, asserting the value
+survives untouched and `episode_eviction_preset` lands at `'forever'`; a fresh DB gets both columns
+directly). `test_main_task_chat_turns.py`'s `TestRetentionSettingsEndpoints` extended for the new
+independent-update semantics (setting one field leaves the other's current value in the response;
+both fields validated independently; a later call omitting a previously-set field doesn't reset it).
+Full suite: 1571 passed, 0 failed.
+
+**Live-verified against the real reporting user's desktop app**, not just the test suite: rebuilt
+the packaged Tauri app (§16.14's build pipeline) with these changes, confirmed via direct API calls
+against the live, real `localist_memory.db` that migration preserved the existing `30d` chat preset
+exactly, added `episode_eviction_preset='forever'` with no data loss, and that `PUT
+/settings/retention` with only one field genuinely leaves the other untouched (round-tripped
+episodes to `90d` and back to `forever` without disturbing the `30d` chat value throughout).

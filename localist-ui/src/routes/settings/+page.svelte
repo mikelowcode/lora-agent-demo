@@ -10,6 +10,12 @@
     fetchBackendModels,
     pinChatModel
   } from '$lib/stores/runtimeBackendSwitch';
+  import {
+    embeddingModelSwitchLoading,
+    embeddingModelSwitchError,
+    setEmbeddingModel
+  } from '$lib/stores/embeddingModelSwitch';
+  import { confirmDialog } from '$lib/confirmDialog';
   import { theme } from '$lib/stores/theme';
   import { fontSize, FONT_SIZES } from '$lib/stores/fontSize';
   import { browser } from '$app/environment';
@@ -19,6 +25,7 @@
     retentionSettingsError,
     loadRetentionSettings,
     setRetentionPreset,
+    setEpisodeRetentionPreset,
     type EvictionPreset
   } from '$lib/stores/retentionSettings';
   import {
@@ -90,7 +97,7 @@
   }
 
   async function handleReembedCorpus() {
-    const proceed = confirm(
+    const proceed = await confirmDialog(
       'Re-embed the wiki/raw corpus now with the active embedding model? ' +
       'This blocks until every document has been re-embedded, which can take ' +
       'a while for a large corpus.'
@@ -136,11 +143,11 @@
 
   $: if (selectedUiBackend) refreshModelsForSelected();
 
-  function selectRuntimeBackend(backend: RuntimeBackend) {
+  async function selectRuntimeBackend(backend: RuntimeBackend) {
     selectedUiBackend = backend;
     if (backend === $modelConfig.backend) return; // already active — nothing to switch
 
-    const proceed = confirm(
+    const proceed = await confirmDialog(
       `Switch the active runtime backend to ${RUNTIME_BACKEND_LABELS[backend]}? ` +
       `In-flight requests will keep running on the current backend unaffected, ` +
       `but this switch itself can take several seconds.`
@@ -160,6 +167,47 @@
   function onChatModelSelectChange(e: Event) {
     const value = (e.target as HTMLSelectElement).value;
     void handleChatModelPick(value);
+  }
+
+  // Embedding model — Ollama-only for now. oMLX has no configurable
+  // embedding model (runtime_factory._make_omlx() hardcodes it; see
+  // docs/architecture/16-runtime-backend-layer.md §16.4), and Foundry is
+  // scoped out of the UI for now even though the backend endpoint itself
+  // is backend-agnostic. Always scoped to the real active backend
+  // ($modelConfig.backend), never the Chat Model card's preview-only
+  // selectedUiBackend — setting an embedding model always applies to
+  // whichever backend is actually live right now.
+  let embeddingModels: string[] = [];
+  let embeddingModelsFetchToken = 0;
+  let embeddingModelResult: string | null = null;
+
+  async function refreshEmbeddingModels() {
+    if ($modelConfig.backend !== 'ollama') {
+      embeddingModels = [];
+      return;
+    }
+    const token = ++embeddingModelsFetchToken;
+    const models = await fetchBackendModels('ollama');
+    if (token === embeddingModelsFetchToken) embeddingModels = models;
+  }
+
+  $: if ($modelConfig.backend) refreshEmbeddingModels();
+
+  async function handleEmbeddingModelPick(value: string) {
+    embeddingModelResult = null;
+    const ok = await setEmbeddingModel(value);
+    if (ok) {
+      embeddingModelResult = value
+        ? `Embedding model set to ${value}.`
+        : 'Embedding model cleared — back to keyword-only (or EmbeddingEngine, if enabled).';
+      await checkHealth();
+      await loadMemoryStats();
+    }
+  }
+
+  function onEmbeddingModelSelectChange(e: Event) {
+    const value = (e.target as HTMLSelectElement).value;
+    void handleEmbeddingModelPick(value);
   }
 
   let checking = false;
@@ -409,6 +457,46 @@
       </div>
     </section>
 
+    {#if $modelConfig.backend === 'ollama'}
+      <!-- Embedding model (Ollama only — see docs/architecture/16-runtime-backend-layer.md §16.4) -->
+      <section class="settings-card">
+        <div class="card-title">Embedding Model — Ollama</div>
+        <div class="field-group">
+          <select
+            id="embedding-model"
+            aria-label="Embedding model for Ollama"
+            class="settings-input"
+            disabled={$embeddingModelSwitchLoading}
+            on:change={onEmbeddingModelSelectChange}
+          >
+            <option value="" selected={!$health.embedding_model}>
+              None — keyword-only fallback
+            </option>
+            {#each embeddingModels as m}
+              <option value={m} selected={m === $health.embedding_model}>{m}</option>
+            {/each}
+          </select>
+          <p class="field-hint">
+            Routes local embeddings through Ollama's <code>/api/embed</code> via
+            <code>POST /settings/embedding-model</code> — the desktop-build-friendly
+            alternative to MLX EmbeddingEngine, which the packaged app doesn't bundle.
+            Applies immediately; switching models flags the wiki/raw corpus and chat
+            history stale for re-embedding (see the Corpus Embeddings card above) —
+            episodic memory re-embeds itself automatically.
+          </p>
+        </div>
+        {#if $embeddingModelSwitchLoading}
+          <span class="spinner" aria-hidden="true" />
+        {/if}
+        {#if embeddingModelResult}
+          <p class="card-hint">{embeddingModelResult}</p>
+        {/if}
+        {#if $embeddingModelSwitchError}
+          <p class="card-hint" style="color:var(--error)">{$embeddingModelSwitchError}</p>
+        {/if}
+      </section>
+    {/if}
+
     <!-- Streaming / episodic approval toggles -->
     <section class="settings-card row">
       <div class="card-title">Streaming responses</div>
@@ -580,10 +668,11 @@
       {/if}
     </section>
 
-    <!-- Data retention (chat history + episodes) -->
+    <!-- Data retention (chat history + episodes — independent as of §20.12) -->
     <section class="settings-card">
       <div class="card-title">Data Retention</div>
-      <p class="card-desc">Choose how long chat history and saved episodes are kept before they're automatically cleaned up.</p>
+
+      <p class="card-desc">Chat History — how long raw conversation turns are kept before they're permanently deleted.</p>
       <div class="segmented">
         {#each EVICTION_PRESETS as p}
           <button
@@ -595,6 +684,24 @@
           >{p.label}</button>
         {/each}
       </div>
+
+      <p class="card-desc" style="margin-top: var(--sp-4)">
+        Episodic Memory — how long learned facts/preferences are kept before being retracted
+        (reversible — see the Episodes tab's "Reactivate" button). Defaults to Forever: a fact
+        doesn't stop being true just because time passed with no chat about it.
+      </p>
+      <div class="segmented">
+        {#each EVICTION_PRESETS as p}
+          <button
+            type="button"
+            class="seg-btn"
+            class:active={$retentionSettings.episode_eviction_preset === p.value}
+            disabled={$retentionSettingsLoading}
+            on:click={() => setEpisodeRetentionPreset(p.value)}
+          >{p.label}</button>
+        {/each}
+      </div>
+
       {#if $retentionSettingsError}
         <p class="card-hint" style="color:var(--error)">{$retentionSettingsError}</p>
       {/if}

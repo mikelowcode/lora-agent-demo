@@ -151,6 +151,31 @@ export async function refreshPendingCount(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// All-statuses total — independent of episodesStore's currently-applied
+// filter, same reasoning as pendingCount above. Lets the panel show e.g.
+// "68 episodes total" regardless of which status filter is selected, so a
+// user looking at "Active (3)" can see the rest of their history hasn't
+// gone missing — it's just filtered out of the current view.
+// ---------------------------------------------------------------------------
+
+export const allEpisodesTotal = writable<number>(0);
+
+export async function refreshAllEpisodesTotal(): Promise<void> {
+  const params = new URLSearchParams();
+  params.set('status', 'all');
+  params.set('limit', '1');   // only `total` is needed, not the row data
+
+  try {
+    const res = await fetch(apiUrl(`/api/memory/episodes?${params}`));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data: { total: number } = await res.json();
+    allEpisodesTotal.set(data.total);
+  } catch {
+    // Non-fatal — see refreshPendingCount()'s identical rationale above.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Approve / reject — write-approval gate actions
 // ---------------------------------------------------------------------------
 

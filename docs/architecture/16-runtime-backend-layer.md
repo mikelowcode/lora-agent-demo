@@ -944,3 +944,190 @@ responses (a real stability signal), or a concrete product reason emerges for Lo
 benchmarking on the user's behalf rather than pointing them at oMLX's own panel — and re-verify the
 endpoint shapes fresh against whatever oMLX version is current at that time rather than trusting
 this section's specifics indefinitely; they were measured against one rc build on one machine.
+
+### §16.14 — `POST /settings/embedding-model`: a live, Ollama-backed embedding-model switch (2026-09-05)
+
+Closes the "no independent embedding-source switch endpoint (out of scope, tracked separately)" gap
+§16.6 left open. Built specifically for the packaged Tauri desktop build (see
+`docs/architecture/07-localist-ui.md`'s packaging notes): the base-only PyInstaller freeze ships
+with no `mlx-embeddings` at all (kept out deliberately for license/bundle-size reasons —
+`THIRD_PARTY_LICENSES.md`), so tier 2 (`EmbeddingEngine`) can never engage there regardless of
+`LOCALIST_EMBEDDING_ENGINE_ENABLED`. Ollama's `/api/embed` (tier 1, §16.4) is the only local
+embedding path the desktop build can actually offer, and until this endpoint there was no UI or API
+surface to configure it after first launch — only the CLI/dev-only `start_localist.sh` first-run
+prompt, which the Tauri shell never runs (it spawns the frozen backend binary directly, per
+`localist-ui/src-tauri/src/lib.rs`, not through the shell script).
+
+**What was built.** `POST /settings/embedding-model` (`main.py`), request `{model: string}`. A
+non-empty `model` health-checks it against the *currently active* runtime backend before committing
+anything (`_create_and_check_embedding_candidate()`, mirroring `_create_and_check_backend()` but
+overriding `embedding_model` instead of `backend`); an empty `model` clears the tier-1 override.
+oMLX is rejected up front with a 409 (not left to surface as a confusing "model not found" 422) —
+`runtime_factory._make_omlx()` hardcodes `embedding_model=""` regardless of what's requested
+(§16.4's already-documented, still-unscheduled gap), so a health-check-based error there would blame
+the wrong thing. Rebuilds `_state.runtime`/`.wiki_agent`/`.controller` under the same
+`_runtime_switch_lock` a runtime-backend switch uses — even though the chat backend/model are
+unchanged — specifically so `GET /health`'s `embed_model_found`/`embedding_model` (the latter field
+newly added to `HealthResponse`, sourced from `settings.embedding_model`) reflect the change
+immediately: each concrete runtime client's `health_check()` compares against the `embedding_model`
+baked in at its own construction, not something passed fresh per call, so leaving `_state.runtime`
+pointed at the old client would have left the health badge silently stale.
+
+**Clearing falls back to tier 2, not straight to tier 3 — a live-caught bug, not a design choice
+made correctly the first time.** The first implementation set `embed_fn = None` unconditionally
+when `model` was empty, which is wrong whenever `_state.embedding_engine` already holds a loaded,
+available instance from startup (the common case on the full dev build, where tier 2 engages
+because `LOCALIST_EMBEDDING_MODEL` is normally unset) — clearing a tier-1 override would have
+silently dropped a working embedder straight to keyword-only instead of restoring the
+already-loaded `EmbeddingEngine`. Caught by manually exercising the real endpoint against a live
+Ollama daemon (set → `nomic-embed-text:latest`, confirmed via `/api/embed`; clear → checked
+`GET /health` came back `embed_model_found: false` when it should have stayed `true` via
+`EmbeddingEngine`), not by the first pass of unit tests, which had mocked `_state.embedding_engine`
+to `None` throughout and so never exercised the fallback path at all. Fixed: clearing now re-derives
+`embed_fn` from `_state.embedding_engine.embed` when that instance is non-`None` and `.available`,
+exactly mirroring what `_configure_embedding_source()` would produce for an unset
+`LOCALIST_EMBEDDING_MODEL` at a fresh boot. Does not attempt to *newly construct* an `EmbeddingEngine`
+live — only reuses one already loaded at startup — so this fallback is a no-op (falls through to
+keyword-only) on the desktop build, where no such instance ever exists.
+
+**A second, related bug caught in the same pass: naming, not just selection.**
+`_derive_active_embedding_model_name(settings, embed_fn, embedding_engine)` checks
+`embedding_engine is not None` *before* checking `embed_fn is not None` — a contract that only holds
+because `_configure_embedding_source()` guarantees the two are mutually exclusive at startup
+(`embedding_engine` is never constructed at all when tier 1 engages). This endpoint's rebuild path
+doesn't share that guarantee automatically: `_state.embedding_engine` stays whatever `lifespan()`
+left it as regardless of which tier this endpoint activates, so passing it through unconditionally
+when *setting* a tier-1 model would have made the derived name resolve to the stale
+`EmbeddingEngine`'s `model_path` instead of the actual Ollama model — silently defeating the
+Planner's `_TUNED_EMBEDDING_MODEL` mismatch guard (§16.4) by comparing against the wrong name and
+never warning on a real mismatch. Fixed by passing `embedding_engine=None` to the naming call
+whenever a tier-1 `model` is set (restoring the mutual-exclusivity the function assumes) and the
+real `_state.embedding_engine` only when clearing. The derived name — not the raw `model` string —
+is what's threaded into `MemoryManager.set_embedding_source()`, so provenance checking (below)
+compares against the vectors' actual source model in both directions.
+
+**`MemoryManager.set_embedding_source(embed_fn, embedding_model_name)`** — new public method,
+`memory_manager.py`. `embed_fn` is a read-only *property* (§16.5: a runtime-backend switch must
+never implicitly change it), but this is the dedicated, intentional path for actually changing it on
+a deliberate embedding-model switch. Re-runs `_check_embedding_provenance()` whenever
+`embedding_model_name` is not `None`, so a live switch gets the exact same mismatch handling a fresh
+restart with the new model configured would: episodes re-embed in place immediately (small, bounded
+cost); corpus and chat_turns are flagged stale for a manual `POST /memory/reembed` /
+`POST /memory/reembed-chat-turns` (both already existed, unchanged) rather than silently re-ranking
+with vectors from a different model's geometry.
+
+**Frontend.** New `embeddingModelSwitch.ts` store (`setEmbeddingModel()`,
+`embeddingModelSwitchLoading`/`Error` writables) following `runtimeBackendSwitch.ts`'s
+no-optimistic-update-on-failure pattern. `HealthResponse` gained `embedding_model: string`
+(mirrored into `localist-ui`'s `HealthState`) specifically so the Settings UI has something to
+select against — there was previously no GET surface for the configured value at all, only the
+boolean `embed_model_found`. `routes/settings/+page.svelte` gained an "Embedding Model — Ollama"
+card, shown only when `$modelConfig.backend === 'ollama'` (the *real* active backend, not the Chat
+Model card's preview-only `selectedUiBackend` — an embedding-model switch always targets whichever
+backend is actually live, there is no "preview a different backend's embedding models" concept
+the way chat-model preview has). Model choices are fetched via the existing
+`GET /settings/runtime-backend/{backend}/models` (unfiltered by embedding-capability, same
+established convention the Chat Model dropdown already uses — Ollama's `/api/tags` doesn't cleanly
+separate chat- from embedding-capable models). Foundry was deliberately left out of the UI for this
+pass even though the backend endpoint is backend-agnostic and already supports it (§16.4) — a
+smaller audience, scoped out rather than built speculatively; oMLX is excluded per the 409 above.
+
+**Live-verified end-to-end (2026-09-05), not just unit-tested** — against the real Ollama daemon,
+real `.env`, and the real dev `localist_memory.db`: set → `nomic-embed-text:latest`
+(`GET /health` reflected it immediately, `.env` persisted, corpus/chat_turns correctly flagged
+stale — a genuine cross-model mismatch); clear → confirmed falls back to the already-loaded
+`EmbeddingEngine` (`embed_model_found` stayed `true`, `embedding_model` reported `""`) rather than
+keyword-only; browser-driven (Playwright, no project-specific run skill existed for this yet)
+click-through of the new Settings card confirmed the dropdown reflects `$health.embedding_model`,
+selecting a model shows the "Embedding model set to …" confirmation and the pre-existing "Corpus
+embeddings out of date" badge, and re-selecting "None" clears back to it. Real corpus/chat_turns
+re-embedded back to a consistent state (`POST /memory/reembed` / `-chat-turns`) after testing so the
+user's actual dev database was left exactly as found.
+
+**Test suite:** `backend/tests/test_main_embedding_model_switch.py` (new — oMLX rejection,
+unreachable-backend rejection, model-not-found rejection, successful set, the
+embedding-engine-fallback-on-clear case, the stale-embedding-engine-ignored-for-naming case, and the
+`.env`-write-failure/`persisted: false` path) plus three new cases in
+`tests/test_embedding_provenance.py::TestSetEmbeddingSource` covering `set_embedding_source()`
+directly (re-embeds episodes on a new model, flags corpus stale on mismatch, clearing skips the
+provenance check). 1551 passed / 0 failed full-suite after this change (1540 baseline).
+
+**Open items:**
+- Foundry is not exposed in the Settings UI for this endpoint, though the backend supports it
+  identically to Ollama — pick up if there's demand.
+- No first-run/onboarding surface points a new desktop user at this control the way
+  `start_localist.sh`'s interactive prompt does on the CLI/dev build — a fresh packaged install
+  still defaults to keyword-only with no in-app nudge to configure Ollama embeddings. Tracked
+  alongside the broader "first-run config UX" item already open for the Tauri shell (top-level
+  `README.md`'s Roadmap, `backend/packaging/README.md`).
+
+### §16.15 — `window.confirm()` is a silent no-op in the packaged Tauri webview; fixed via `tauri-plugin-dialog` (2026-09-05)
+
+Found immediately after §16.14 shipped: a user selected `nomic-embed-text:latest` in the new
+Embedding Model card (correctly flagging `corpus_stale`, per §16.4's designed behavior — not a
+bug), then clicked "Re-embed Corpus Now" and reported the warning never cleared. Backend-side
+`POST /memory/reembed` was proven fully functional in isolation (direct `curl` against the running
+packaged app: 41/41 documents re-embedded in under 2 seconds, `corpus_stale` correctly flipped to
+`false`) — ruling out the user's own hypothesis that Ollama needed the model "loaded" first (Ollama
+loads a pulled model into memory on first request automatically; no explicit load step exists or is
+needed, and the health-check gate on the switch endpoint already requires the model to be present in
+`ollama list`/`/api/tags` before the switch is even accepted).
+
+**Root cause, proven empirically, not assumed.** `EpisodesPanel`/Settings' `handleReembedCorpus()`
+and `selectRuntimeBackend()` both gate on the browser-native `window.confirm(...)`. Verified live by
+temporarily injecting a bare `confirm('...')` call into `app.html`'s `<head>` (a synchronous call
+that should block all further script execution and page rendering until dismissed) and rebuilding:
+the packaged app's window rendered a fully-interactive page straight through it — no dialog ever
+appeared, proving the packaged app's WKWebView instance has no `WKUIDelegate` wired up for JS
+dialogs at all, so `confirm()` returns immediately (falsy) with nothing shown. This silently hit
+every `if (!proceed) return;` gate in the codebase — both the Corpus re-embed button and the Runtime
+Backend segmented-control switch were affected identically, the confirm-dialog bug is unrelated to
+this session's embedding-model work and would have existed since §16.6's original Tauri wiring; it
+simply had no prior report because nobody had hit a `confirm()`-gated control in the packaged app
+and noticed the silence before now. The `:5173` dev flow was never affected — real browsers
+implement `window.confirm()` natively.
+
+**Fix.** Added `tauri-plugin-dialog` (`src-tauri/Cargo.toml`, registered via
+`.plugin(tauri_plugin_dialog::init())` in `lib.rs`; `dialog:allow-confirm`/`dialog:allow-ask`
+permissions added to `capabilities/default.json`) plus the `@tauri-apps/plugin-dialog` /
+`@tauri-apps/api` npm packages — the first genuine use of any Tauri-specific JS API in this
+frontend; previously the Rust shell was entirely invisible to the Svelte code. New
+`localist-ui/src/lib/confirmDialog.ts` exports `confirmDialog(message, title?): Promise<boolean>`,
+branching on `@tauri-apps/api/core`'s `isTauri()`: inside the packaged app it calls the plugin's
+`confirm()` (a real native `NSAlert`-backed dialog, confirmed via the same injection technique —
+this time the dialog rendered, showed Cancel/OK, and blocked as expected); in the browser dev flow
+it falls back to `window.confirm()` unchanged. Both call sites in
+`routes/settings/+page.svelte` (`handleReembedCorpus`, `selectRuntimeBackend`) now `await
+confirmDialog(...)` instead of calling `confirm()` synchronously.
+
+**Live-verified end-to-end (2026-09-05)**, both before and after, via the same startup-injection
+technique (temporary, reverted before landing) against real debug builds — not just unit/type
+checks: pre-fix, an injected `confirm()` call was silently skipped with no dialog; post-fix, an
+injected `confirmDialog()` call showed a real native dialog and correctly blocked. Real corpus and
+chat_turns staleness on the user's actual desktop install were then cleared directly via
+`POST /memory/reembed` / `-chat-turns` (203/204 chat turns — one row's embed call failed and was
+skipped per `reembed_chat_turns()`'s existing per-row try/except, left for a future manual retry,
+not investigated further this session) so their real data reflects `nomic-embed-text:latest`
+end-to-end.
+
+**A related latent bug, not yet hit but now visible from the same root cause:**
+`reembed_corpus()`/`reembed_chat_turns()` (`memory_manager.py`) unconditionally clear
+`_corpus_stale`/`_chat_turns_stale` and advance the `embedding_provenance` row after a run,
+regardless of how many individual documents actually failed to embed (`reembedded < total`). A
+corpus where *every* row's embed call failed (e.g. a genuinely unreachable Ollama daemon mid-run)
+would still be marked fresh and provenance-advanced, leaving stale vectors under a false "not stale"
+flag. Not triggered here — the live run above succeeded for all but one row — but flagged as a
+pre-existing gap worth closing (e.g., only clearing the flag when `reembedded == total`, or
+surfacing a partial-failure warning distinct from full success) rather than assumed fixed by this
+session's changes.
+
+**Test suite:** no backend changes in this entry — frontend/Rust only.
+`localist-ui`'s `npm run check` clean (0 errors/warnings) before and after.
+
+**Open items:**
+- The `reembedded < total` silent-success gap above (`memory_manager.py`) — not closed this
+  session.
+- No automated test covers the Tauri-webview dialog path (inherently hard to unit-test — this was
+  caught and fixed via live injection against a real build, not a test file). A future regression
+  here would need the same manual technique to catch, or a Tauri-specific e2e harness this project
+  doesn't have yet.

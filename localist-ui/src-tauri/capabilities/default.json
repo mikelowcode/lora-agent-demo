@@ -6,6 +6,8 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:allow-confirm",
+    "dialog:allow-ask"
   ]
 }

@@ -1,15 +1,26 @@
 """
-Tests for MemoryManager.sweep_expired_memory() — the global retention TTL
+Tests for MemoryManager.sweep_expired_memory() — the retention TTL
 enforcement that runs once at backend startup (main.py's lifespan()).
 
-Governs two tables under one preset (retention_settings.eviction_preset):
-  - chat_turns : hard-deleted once created_at is older than the TTL.
+Two independent presets as of schema v16 (docs/architecture/
+20-episode-browsing-ui.md §20.12) — previously one shared
+retention_settings.eviction_preset column governed both tables identically,
+found live to be a real problem: a stable fact ("the user games on an Xbox
+Series X") was silently retracted by the same 30-day window set for
+chat-history cleanup, even though it was still true and had been used
+since. Now:
+  - chat_turns : hard-deleted once created_at is older than
+    get_retention_preset()'s TTL. Unset default: keep everything (None).
   - episodes   : soft-retracted (status='active' -> 'retracted') once
-    created_at is older than the TTL — never hard-deleted, matching the
-    existing approve/reject/retract lifecycle.
+    created_at is older than get_episode_retention_preset()'s OWN,
+    independent TTL — never hard-deleted, matching the existing
+    approve/reject/retract lifecycle. Unset default: "forever" (a
+    concrete value, not merely "unset") — episodic memory doesn't inherit
+    chat-history's TTL.
 
-No preset set, or preset == "forever", must be a true no-op (not "sweep
-with an infinite TTL").
+Either preset unset/"forever" must be a true no-op for its own table (not
+"sweep with an infinite TTL"), independent of what the other preset is set
+to.
 """
 
 import sqlite3
@@ -60,6 +71,8 @@ def _insert_episode(
 class TestSweepNoPreset:
 
     def test_no_preset_set_is_a_no_op(self, mm):
+        # Neither preset ever set: chat_turns defaults to None (keep
+        # everything), episodes defaults to "forever" — both no-ops.
         old = time.time() - 365 * 86400
         _insert_chat_turn(mm, created_at=old)
         _insert_episode(mm, created_at=old)
@@ -72,11 +85,12 @@ class TestSweepNoPreset:
         assert conn.execute("SELECT COUNT(*) FROM chat_turns").fetchone()[0] == 1
         conn.close()
 
-    def test_forever_preset_is_a_no_op(self, mm):
+    def test_forever_preset_is_a_no_op_for_both(self, mm):
         old = time.time() - 365 * 86400
         _insert_chat_turn(mm, created_at=old)
         _insert_episode(mm, created_at=old)
         mm.set_retention_preset("forever")
+        mm.set_episode_retention_preset("forever")
 
         result = mm.sweep_expired_memory()
 
@@ -87,6 +101,8 @@ class TestSweepNoPreset:
 class TestSweepEnforcement:
 
     def test_7d_preset_deletes_old_chat_turns_and_retracts_old_episodes(self, mm):
+        # Both presets explicitly set to 7d — the "old shared behavior"
+        # scenario, now reached via two independent calls instead of one.
         now = time.time()
         old = now - 8 * 86400
         recent = now - 1 * 86400
@@ -97,6 +113,7 @@ class TestSweepEnforcement:
         recent_ep_id   = _insert_episode(mm, created_at=recent, subject="recent fact")
 
         mm.set_retention_preset("7d")
+        mm.set_episode_retention_preset("7d")
         result = mm.sweep_expired_memory()
 
         assert result == {"chat_turns_deleted": 1, "episodes_retracted": 1}
@@ -119,7 +136,7 @@ class TestSweepEnforcement:
         old = time.time() - 8 * 86400
         _insert_episode(mm, created_at=old, status="retracted", subject="already gone")
 
-        mm.set_retention_preset("7d")
+        mm.set_episode_retention_preset("7d")
         result = mm.sweep_expired_memory()
 
         assert result == {"chat_turns_deleted": 0, "episodes_retracted": 0}
@@ -129,9 +146,176 @@ class TestSweepEnforcement:
         _insert_chat_turn(mm, created_at=old)
         _insert_episode(mm, created_at=old)
         mm.set_retention_preset("7d")
+        mm.set_episode_retention_preset("7d")
 
         first  = mm.sweep_expired_memory()
         second = mm.sweep_expired_memory()
 
         assert first  == {"chat_turns_deleted": 1, "episodes_retracted": 1}
         assert second == {"chat_turns_deleted": 0, "episodes_retracted": 0}
+
+
+class TestPresetsAreIndependent:
+    """
+    The core behavior this decoupling exists for: setting one preset must
+    never affect the other table, in either direction — the exact live
+    failure (chat_turns' 30d window silently retracting a still-true
+    episode) this schema change was built to prevent.
+    """
+
+    def test_chat_preset_alone_does_not_touch_episodes(self, mm):
+        old = time.time() - 8 * 86400
+        _insert_chat_turn(mm, created_at=old)
+        old_ep_id = _insert_episode(mm, created_at=old, subject="stable fact")
+
+        mm.set_retention_preset("7d")  # episode preset left at its "forever" default
+        result = mm.sweep_expired_memory()
+
+        assert result == {"chat_turns_deleted": 1, "episodes_retracted": 0}
+        assert mm.count_episodes(status="active") == 1
+        active_ids = {row["id"] for row in mm.list_episodes(status="active")}
+        assert active_ids == {old_ep_id}
+
+    def test_episode_preset_alone_does_not_touch_chat_turns(self, mm):
+        old = time.time() - 8 * 86400
+        old_turn_id = _insert_chat_turn(mm, created_at=old)
+        _insert_episode(mm, created_at=old, subject="ephemeral note")
+
+        mm.set_episode_retention_preset("7d")  # chat preset left unset ("forever" behavior)
+        result = mm.sweep_expired_memory()
+
+        assert result == {"chat_turns_deleted": 0, "episodes_retracted": 1}
+        conn = sqlite3.connect(str(mm._db_path))
+        remaining_turn_ids = {
+            r[0] for r in conn.execute("SELECT id FROM chat_turns").fetchall()
+        }
+        conn.close()
+        assert remaining_turn_ids == {old_turn_id}
+
+    def test_different_values_for_each_are_respected_independently(self, mm):
+        # chat_turns: 7d window (the old turn is 8d old -> swept).
+        # episodes: 90d window (the old episode is only 8d old -> kept).
+        old = time.time() - 8 * 86400
+        _insert_chat_turn(mm, created_at=old)
+        old_ep_id = _insert_episode(mm, created_at=old, subject="still fresh under 90d")
+
+        mm.set_retention_preset("7d")
+        mm.set_episode_retention_preset("90d")
+        result = mm.sweep_expired_memory()
+
+        assert result == {"chat_turns_deleted": 1, "episodes_retracted": 0}
+        assert mm.count_episodes(status="active") == 1
+        assert {row["id"] for row in mm.list_episodes(status="active")} == {old_ep_id}
+
+
+class TestEpisodeRetentionPresetAccessors:
+    """Direct unit tests for get/set_episode_retention_preset(), mirroring
+    test_chat_turns_schema.py's coverage of the chat_turns equivalents."""
+
+    def test_defaults_to_forever_when_never_set(self, mm):
+        assert mm.get_episode_retention_preset() == "forever"
+
+    def test_set_then_get_roundtrips(self, mm):
+        mm.set_episode_retention_preset("30d")
+        assert mm.get_episode_retention_preset() == "30d"
+
+    def test_set_twice_overwrites(self, mm):
+        mm.set_episode_retention_preset("7d")
+        mm.set_episode_retention_preset("90d")
+        assert mm.get_episode_retention_preset() == "90d"
+
+    def test_invalid_preset_raises(self, mm):
+        with pytest.raises(ValueError):
+            mm.set_episode_retention_preset("60d")
+        assert mm.get_episode_retention_preset() == "forever"
+
+    def test_setting_episode_preset_does_not_affect_chat_preset(self, mm):
+        mm.set_episode_retention_preset("30d")
+        assert mm.get_retention_preset() is None
+
+    def test_setting_chat_preset_does_not_affect_episode_preset(self, mm):
+        mm.set_retention_preset("30d")
+        assert mm.get_episode_retention_preset() == "forever"
+
+
+class TestSchemaV16Migration:
+    """
+    Schema v16 (docs/architecture/20-episode-browsing-ui.md §20.12):
+    retention_settings gains episode_eviction_preset. Mirrors
+    test_memory_manager_pinned_github_repos.py's
+    TestPinnedGithubReposSchemaMigration convention — a real v15 database
+    (not a mock), migrated by opening it with MemoryManager.
+    """
+
+    def test_v15_database_with_existing_chat_preset_migrates_cleanly(self, tmp_path):
+        # The exact live scenario this decoupling was built for: an
+        # existing install that had already set eviction_preset="30d"
+        # (governing both tables pre-v16) must, after migrating, keep that
+        # value for chat_turns but get episodes newly decoupled to
+        # "forever" — not silently inherit "30d" for episodes too.
+        path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (15);
+            CREATE TABLE chat_turns (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                content   TEXT NOT NULL,
+                embedding BLOB
+            );
+            CREATE TABLE retention_settings (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                eviction_preset TEXT
+            );
+            INSERT INTO retention_settings (id, eviction_preset) VALUES (1, '30d');
+        """)
+        conn.commit()
+        conn.close()
+
+        mm = MemoryManager(db_path=path)
+
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        row = conn.execute("SELECT * FROM retention_settings WHERE id = 1").fetchone()
+        conn.close()
+
+        from localist.memory_manager import _SCHEMA_VERSION
+        assert version == _SCHEMA_VERSION
+        assert row["eviction_preset"] == "30d"                    # untouched
+        assert row["episode_eviction_preset"] == "forever"        # newly decoupled
+        assert mm.get_retention_preset() == "30d"
+        assert mm.get_episode_retention_preset() == "forever"
+
+    def test_v15_database_with_no_row_at_all_migrates_cleanly(self, tmp_path):
+        path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (15);
+            CREATE TABLE chat_turns (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                content   TEXT NOT NULL,
+                embedding BLOB
+            );
+            CREATE TABLE retention_settings (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                eviction_preset TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        mm = MemoryManager(db_path=path)
+
+        assert mm.get_retention_preset() is None
+        assert mm.get_episode_retention_preset() == "forever"
+
+    def test_fresh_db_has_both_columns(self, tmp_path):
+        mm = MemoryManager(db_path=tmp_path / "fresh.db")
+        assert mm.get_retention_preset() is None
+        assert mm.get_episode_retention_preset() == "forever"

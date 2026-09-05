@@ -339,6 +339,55 @@ class TestGenuineEpisodesMismatch:
 
 
 # ---------------------------------------------------------------------------
+# set_embedding_source() — the live-switch counterpart to passing embed_fn/
+# embedding_model_name at construction time (POST /settings/embedding-model)
+# ---------------------------------------------------------------------------
+
+class TestSetEmbeddingSource:
+    def test_switching_to_a_new_model_reembeds_episodes_in_place(self, tmp_path):
+        path = tmp_path / "live_switch.db"
+        _build_schema(path)
+        _insert_episode(path, subject="likes-coffee", content="Michael likes coffee", embedded=True)
+        _set_provenance(path, "episodes", _OTHER)
+
+        mm = MemoryManager(db_path=path)  # no embed source configured yet
+        assert mm.embed_fn is None
+
+        new_embed_fn = _stub_embed_fn(vector_value=0.7)
+        mm.set_embedding_source(new_embed_fn, _TUNED)
+
+        assert mm.embed_fn is new_embed_fn
+        assert _get_provenance(path, "episodes") == _TUNED
+        new_embed_fn.assert_any_call("likes-coffee. Michael likes coffee")
+
+    def test_switching_flags_mismatched_corpus_stale(self, tmp_path):
+        path = tmp_path / "live_switch_corpus.db"
+        _build_schema(path)
+        _insert_document(path, name="doc-a", embedded=True)
+        _set_provenance(path, "corpus", _OTHER)
+
+        mm = MemoryManager(db_path=path)
+        assert mm._corpus_stale is False
+
+        mm.set_embedding_source(_stub_embed_fn(), _TUNED)
+
+        assert mm._corpus_stale is True
+
+    def test_clearing_sets_embed_fn_none_and_skips_provenance_check(self, tmp_path):
+        path = tmp_path / "live_switch_clear.db"
+        _build_schema(path)
+        _insert_episode(path, subject="s", embedded=True)
+        _set_provenance(path, "episodes", _TUNED)
+
+        mm = MemoryManager(db_path=path, embed_fn=_stub_embed_fn(), embedding_model_name=_TUNED)
+        mm.set_embedding_source(None, None)
+
+        assert mm.embed_fn is None
+        # Provenance untouched — clearing isn't a "new model", nothing to compare.
+        assert _get_provenance(path, "episodes") == _TUNED
+
+
+# ---------------------------------------------------------------------------
 # reembed_corpus() — manual refresh
 # ---------------------------------------------------------------------------
 

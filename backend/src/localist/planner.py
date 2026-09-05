@@ -795,6 +795,65 @@ _EPISODIC_RELEVANCE_THRESHOLD: float = 0.70
 # constant backs, and docs/architecture/16-runtime-backend-layer.md §16.4.
 _TUNED_EMBEDDING_MODEL: str = "mlx-community/embeddinggemma-300m-4bit"
 
+# ---------------------------------------------------------------------------
+# Per-model validated thresholds — an escape hatch from the all-or-nothing
+# _TUNED_EMBEDDING_MODEL guard above, added 2026-09-05 (docs/architecture/
+# 16-runtime-backend-layer.md §16.15) after a live report that switching the
+# desktop build's embedding source to nomic-embed-text (the only local
+# embedding path available there — no MLX in the packaged build) silently
+# disabled episodic-relevance/search-intent semantic gating entirely,
+# missing a known-relevant "user owns an Xbox" memory on an Xbox-related
+# question.
+#
+# Fails closed, same posture as context_profile.py's _VALIDATED_LOCAL_TIERS:
+# only a model with its own entry here, measured against these exact
+# template sets via diagnostics/nomic_embed_text_threshold_probe.py, gets a
+# threshold set. Any other non-tuned model still falls through to full
+# gating disablement in Planner.__init__ — guessing untested thresholds for
+# an unmeasured model risks silently wrong routing, worse than no semantic
+# signal at all.
+#
+# nomic-embed-text:latest, measured 2026-09-05 (diagnostics/reports/
+# nomic_embed_text_threshold_assessment_2026-09-05.md), against the real
+# Ollama daemon — no clean positive/negative separation exists for any of
+# the four gates under this model (same "no clean separation, ship to
+# observe" character the original MLX thresholds' own history already has
+# in several places in this file), so each value below is the best
+# available trade-off, not a perfect split:
+#   - lookup_request=0.62: preserves 3/3 Cat-C true positives at a cost of
+#     4/17 Cat-A/D false positives — the same "can/could/would you + [verb]"
+#     modal-question collision already known and accepted for the tuned
+#     model's own 0.60 (see _SEMANTIC_GATE_THRESHOLDS comment above), just a
+#     larger residual under this model's geometry.
+#   - explicit_search_action=0.68: no real ESA-positive battery exists in
+#     the probe (a gap inherited from the original tuning diagnostics, which
+#     never built one either); picked as the lowest value clearing all 17
+#     Cat-A/D negatives, matching the only available positive proxy
+#     (Cat-C's max ESA score here is 0.5693, well under 0.68).
+#   - research_intent=0.58: 8/10 Category-T true positives survive against
+#     2/16 remaining FP-pool items.
+#   - episodic_relevance=0.62: 9/13 positive-battery utterances survive
+#     (including "What games do I play?", 0.6179) against 0/20 negatives —
+#     clean on the negative side. KNOWN GAP, not fixed by this threshold
+#     choice: "What console do I own?" (0.5092) and "Tell me about my
+#     Xbox." (0.5112) score too low to cross ANY threshold that also keeps
+#     negatives out (max negative score in the battery is 0.6163) — this is
+#     a template-coverage gap (_EPISODIC_RELEVANCE_TEMPLATES is anchored on
+#     calendar/planning phrasing — "my upcoming event", "my calendar" — not
+#     general personal-fact/possession phrasing), independent of embedding
+#     model or threshold choice, and not addressed by this change. The
+#     deterministic _EPISODIC_KEYWORDS list is the current fallback for
+#     that category of query and does not include hobby/possession terms
+#     either — a separate, not-yet-scoped follow-up.
+_VALIDATED_MODEL_THRESHOLDS: dict[str, dict[str, float]] = {
+    "nomic-embed-text:latest": {
+        "explicit_search_action": 0.68,
+        "lookup_request":         0.62,
+        "research_intent":        0.58,
+        "episodic_relevance":     0.62,
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # research_intent upgrade  (web_search -> research, plain on/off — no
@@ -1101,10 +1160,13 @@ class Planner:
         embedding source is configured at all (keyword-only mode — embed_fn
         is also None in that case, so semantic scoring is already
         short-circuited). When set and it does not match
-        _TUNED_EMBEDDING_MODEL, semantic search-intent gating is disabled
-        for this Planner instance — see the module-level comment above
-        _TUNED_EMBEDDING_MODEL for why cosine-similarity thresholds don't
-        transfer across embedding models.
+        _TUNED_EMBEDDING_MODEL, this Planner instance uses that model's own
+        validated threshold set (_VALIDATED_MODEL_THRESHOLDS) if one exists,
+        or otherwise disables semantic search-intent/episodic-relevance
+        gating entirely — see the module-level comments above
+        _TUNED_EMBEDDING_MODEL and _VALIDATED_MODEL_THRESHOLDS for why
+        cosine-similarity thresholds don't transfer across embedding models
+        without being independently measured.
     """
 
     # Class-level aliases so callers can access via instance (e.g. p._WEB_SEARCH_KEYWORDS)
@@ -1139,17 +1201,41 @@ class Planner:
         # which already short-circuits semantic scoring.
         self._embedding_model_name     = embedding_model_name
         self._semantic_gating_disabled = False
+        # Defaults: the tuned model's own thresholds. Overwritten below only
+        # when a different, independently-validated model is active — see
+        # _VALIDATED_MODEL_THRESHOLDS above.
+        self._semantic_gate_thresholds:     dict[str, float] = dict(_SEMANTIC_GATE_THRESHOLDS)
+        self._research_intent_threshold:    float = _RESEARCH_INTENT_THRESHOLD
+        self._episodic_relevance_threshold: float = _EPISODIC_RELEVANCE_THRESHOLD
+
         if embedding_model_name is not None and embedding_model_name != _TUNED_EMBEDDING_MODEL:
-            logger.warning(
-                "Planner: active embedding model %r does not match the model "
-                "semantic-gating thresholds were tuned against (%r) — "
-                "disabling semantic search-intent gating for this session. "
-                "The thresholds in _SEMANTIC_GATE_THRESHOLDS / "
-                "_RESEARCH_INTENT_THRESHOLD have no validated meaning against "
-                "embeddings from a different model.",
-                embedding_model_name, _TUNED_EMBEDDING_MODEL,
-            )
-            self._semantic_gating_disabled = True
+            validated = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name)
+            if validated is not None:
+                self._semantic_gate_thresholds = {
+                    "explicit_search_action": validated["explicit_search_action"],
+                    "lookup_request":         validated["lookup_request"],
+                }
+                self._research_intent_threshold    = validated["research_intent"]
+                self._episodic_relevance_threshold = validated["episodic_relevance"]
+                logger.info(
+                    "Planner: active embedding model %r does not match the "
+                    "tuned model (%r), but has its own validated threshold "
+                    "set — using that instead of disabling semantic gating. "
+                    "See _VALIDATED_MODEL_THRESHOLDS.",
+                    embedding_model_name, _TUNED_EMBEDDING_MODEL,
+                )
+            else:
+                logger.warning(
+                    "Planner: active embedding model %r does not match the model "
+                    "semantic-gating thresholds were tuned against (%r), and has "
+                    "no validated threshold set of its own — disabling semantic "
+                    "search-intent gating for this session. The thresholds in "
+                    "_SEMANTIC_GATE_THRESHOLDS / _RESEARCH_INTENT_THRESHOLD / "
+                    "_EPISODIC_RELEVANCE_THRESHOLD have no validated meaning "
+                    "against embeddings from a different, unmeasured model.",
+                    embedding_model_name, _TUNED_EMBEDDING_MODEL,
+                )
+                self._semantic_gating_disabled = True
 
         # Session state for Priority 5 caching (§4.3)
         # _episodic_injected: True once episodic bullets have been injected
@@ -1804,9 +1890,9 @@ class Planner:
             # research_intent is only a "gated" group worth resolving a
             # conflict over when the research loop is actually enabled —
             # otherwise nothing acts on its score regardless.
-            gated_groups = dict(_SEMANTIC_GATE_THRESHOLDS)
+            gated_groups = dict(self._semantic_gate_thresholds)
             if self._research_loop_enabled():
-                gated_groups["research_intent"] = _RESEARCH_INTENT_THRESHOLD
+                gated_groups["research_intent"] = self._research_intent_threshold
 
             conflicting = [
                 g for g, t in gated_groups.items() if group_scores.get(g, -1.0) >= t
@@ -1964,7 +2050,7 @@ class Planner:
         if semantic_result is not None:
             best_group, best_score, all_scores = semantic_result
             fired_groups = [
-                group for group, threshold in _SEMANTIC_GATE_THRESHOLDS.items()
+                group for group, threshold in self._semantic_gate_thresholds.items()
                 if all_scores.get(group, 0.0) >= threshold
             ]
             semantic_triggered = bool(fired_groups)
@@ -1984,7 +2070,7 @@ class Planner:
         if semantic_triggered and "web_search" not in tools:
             tools.append("web_search")
             fired_str = ", ".join(
-                f"{group}={all_scores[group]:.3f}(>={_SEMANTIC_GATE_THRESHOLDS[group]:.2f})"
+                f"{group}={all_scores[group]:.3f}(>={self._semantic_gate_thresholds[group]:.2f})"
                 for group in fired_groups
             )
             logger.debug(
@@ -2006,12 +2092,12 @@ class Planner:
         ):
             _, _, all_scores = semantic_result
             research_score = all_scores.get("research_intent", -1.0)
-            if research_score >= _RESEARCH_INTENT_THRESHOLD:
+            if research_score >= self._research_intent_threshold:
                 tools[tools.index("web_search")] = "research"
                 logger.debug(
                     "Planner: Priority 3 — upgraded web_search to research "
                     "(research_intent=%.3f >= %.2f).",
-                    research_score, _RESEARCH_INTENT_THRESHOLD,
+                    research_score, self._research_intent_threshold,
                 )
 
         raw = instruction if instruction is not None else lowered
@@ -2635,11 +2721,11 @@ class Planner:
             )
 
         semantic_score = self._episodic_semantic_relevance(lowered)
-        if semantic_score is not None and semantic_score >= _EPISODIC_RELEVANCE_THRESHOLD:
+        if semantic_score is not None and semantic_score >= self._episodic_relevance_threshold:
             logger.debug(
                 "Planner: Priority 5 — episodic semantic gate fired "
                 "(score=%.3f >= %.2f) → fetch_episodic=True.",
-                semantic_score, _EPISODIC_RELEVANCE_THRESHOLD,
+                semantic_score, self._episodic_relevance_threshold,
             )
             return RoutingPlan(
                 agent          = "conversational_agent",

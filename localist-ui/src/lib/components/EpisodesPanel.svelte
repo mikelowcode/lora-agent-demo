@@ -5,6 +5,8 @@
     loadEpisodes,
     pendingCount,
     refreshPendingCount,
+    allEpisodesTotal,
+    refreshAllEpisodesTotal,
     approveEpisode,
     rejectEpisode,
     reactivateEpisode,
@@ -42,6 +44,23 @@
     typeFilter = '';
     statusFilter = 'retracted';
     loadEpisodes({ typeFilter: '', statusFilter: 'retracted', offset: 0 });
+  }
+
+  function applySupersededFilter() {
+    typeFilter = '';
+    statusFilter = 'superseded';
+    loadEpisodes({ typeFilter: '', statusFilter: 'superseded', offset: 0 });
+  }
+
+  // Distinct from the type-chip row's "All" button above (which means "all
+  // *types*, active status only") — this is the one view that actually
+  // shows every episode regardless of status, matching the allEpisodesTotal
+  // count shown next to the panel title. Without this there was no way to
+  // browse the full history in one place, only per-status subsets.
+  function applyEverythingFilter() {
+    typeFilter = '';
+    statusFilter = 'all';
+    loadEpisodes({ typeFilter: '', statusFilter: 'all', offset: 0, limit: 200 });
   }
 
   function formatDate(ts: number): string {
@@ -108,13 +127,19 @@
   onMount(() => {
     loadEpisodes({ typeFilter: '' });
     refreshPendingCount();
+    refreshAllEpisodesTotal();
   });
 </script>
 
 <div class="episodes-panel">
   <!-- Header -->
   <div class="panel-header">
-    <h2 class="panel-title">Episodic Memory</h2>
+    <h2 class="panel-title">
+      Episodic Memory
+      <span class="panel-total" title="Total episodes across all statuses">
+        {$allEpisodesTotal} total
+      </span>
+    </h2>
     <button
       class="refresh-btn"
       on:click={() => loadEpisodes({ typeFilter, statusFilter, offset: 0 })}
@@ -158,6 +183,17 @@
       class:active={statusFilter === 'retracted'}
       on:click={applyRetractedFilter}
     >Retracted</button>
+    <button
+      class="filter-chip filter-chip-superseded"
+      class:active={statusFilter === 'superseded'}
+      on:click={applySupersededFilter}
+    >Superseded</button>
+    <button
+      class="filter-chip filter-chip-everything"
+      class:active={statusFilter === 'all'}
+      on:click={applyEverythingFilter}
+      title="Every episode regardless of status"
+    >Everything ({$allEpisodesTotal})</button>
   </div>
 
   <!-- Content -->
@@ -267,6 +303,16 @@
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.01em;
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+  }
+
+  .panel-total {
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    font-weight: 400;
+    color: var(--text-muted);
   }
 
   .refresh-btn {
@@ -336,6 +382,10 @@
     border-color: var(--warning);
     background: var(--warning-dim);
   }
+
+  /* Superseded uses the same neutral treatment as Retracted (default
+     .filter-chip.active accent styling) — it's a historical/inactive
+     status, not one that needs its own warning-style color. */
 
   /* Episode list */
   .episode-list {

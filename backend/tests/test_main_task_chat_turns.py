@@ -1,7 +1,7 @@
 """
 Tests for the chat_turns write path wired into POST /task (main.py), and
-the GET/PUT /settings/retention endpoints (global retention preset, shared
-by chat_turns and episodes).
+the GET/PUT /settings/retention endpoints (independent chat_turns/episode
+retention presets as of §20.12 — previously one shared preset).
 
 Covers:
   - A successful task persists exactly one user row and one assistant row.
@@ -9,9 +9,11 @@ Covers:
     a user row but no assistant row — a failed task has no real answer.
   - A memory_manager write failure (add_chat_turn raising) is swallowed and
     never breaks the endpoint's normal successful response.
-  - GET /settings/retention returns null before any PUT; PUT persists
-    a valid preset and returns it; PUT with an invalid preset is rejected
-    with 422 at the request-validation layer.
+  - GET /settings/retention returns eviction_preset=null,
+    episode_eviction_preset="forever" before any PUT; PUT persists either
+    or both presets independently and returns the current values; PUT with
+    an invalid preset (either field) is rejected with 422 at the
+    request-validation layer.
   - GET /chat/history lists chat_turns (paginated, optionally full-text
     filtered via ?q=).
 
@@ -120,19 +122,29 @@ class TestPostTaskChatTurns:
 
 
 class TestRetentionSettingsEndpoints:
+    """
+    eviction_preset (chat_turns) and episode_eviction_preset (episodes) are
+    independent as of §20.12 — episode_eviction_preset defaults to the
+    concrete value "forever" (never null) and is untouched by a PUT that
+    only names eviction_preset, and vice versa.
+    """
 
-    def test_get_returns_null_before_any_put(self, client):
+    def test_get_returns_defaults_before_any_put(self, client):
         resp = client.get("/settings/retention")
         assert resp.status_code == 200
-        assert resp.json() == {"eviction_preset": None}
+        assert resp.json() == {"eviction_preset": None, "episode_eviction_preset": "forever"}
 
-    def test_put_valid_preset_returns_200_with_correct_body(self, client):
+    def test_put_valid_chat_preset_returns_200_leaves_episode_preset_default(self, client):
         resp = client.put("/settings/retention", json={"eviction_preset": "30d"})
         assert resp.status_code == 200
-        assert resp.json() == {"eviction_preset": "30d"}
+        assert resp.json() == {"eviction_preset": "30d", "episode_eviction_preset": "forever"}
 
-    def test_put_invalid_preset_returns_422(self, client):
+    def test_put_invalid_chat_preset_returns_422(self, client):
         resp = client.put("/settings/retention", json={"eviction_preset": "60d"})
+        assert resp.status_code == 422
+
+    def test_put_invalid_episode_preset_returns_422(self, client):
+        resp = client.put("/settings/retention", json={"episode_eviction_preset": "60d"})
         assert resp.status_code == 422
 
     def test_get_after_put_reflects_new_value(self, client):
@@ -141,7 +153,26 @@ class TestRetentionSettingsEndpoints:
 
         get_resp = client.get("/settings/retention")
         assert get_resp.status_code == 200
-        assert get_resp.json() == {"eviction_preset": "forever"}
+        assert get_resp.json() == {"eviction_preset": "forever", "episode_eviction_preset": "forever"}
+
+    def test_put_episode_preset_alone_leaves_chat_preset_untouched(self, client):
+        resp = client.put("/settings/retention", json={"episode_eviction_preset": "90d"})
+        assert resp.status_code == 200
+        assert resp.json() == {"eviction_preset": None, "episode_eviction_preset": "90d"}
+
+    def test_put_both_presets_in_one_request(self, client):
+        resp = client.put(
+            "/settings/retention",
+            json={"eviction_preset": "7d", "episode_eviction_preset": "90d"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"eviction_preset": "7d", "episode_eviction_preset": "90d"}
+
+    def test_put_second_call_omitting_episode_preset_does_not_reset_it(self, client):
+        client.put("/settings/retention", json={"episode_eviction_preset": "90d"})
+        resp = client.put("/settings/retention", json={"eviction_preset": "7d"})
+        assert resp.status_code == 200
+        assert resp.json() == {"eviction_preset": "7d", "episode_eviction_preset": "90d"}
 
 
 class TestChatHistoryEndpoint:

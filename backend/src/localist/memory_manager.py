@@ -152,7 +152,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION   = 15         # increment when schema changes require migration
+_SCHEMA_VERSION   = 16         # increment when schema changes require migration
 _EMBEDDING_DIM    = 768        # EmbeddingGemma-300M-4bit output dimension
 _EMBEDDING_FORMAT = ">768f"    # big-endian float32 × 768
 
@@ -437,6 +437,37 @@ class MemoryManager:
         """
         return self._embed_fn
 
+    def set_embedding_source(
+        self,
+        embed_fn:              "Callable[[str], list[float]] | None",
+        embedding_model_name:  str | None,
+    ) -> None:
+        """
+        Explicitly replace this instance's embedding source. Used by the
+        dedicated POST /settings/embedding-model endpoint for a deliberate,
+        user-initiated embedding-model switch — distinct from embed_fn's
+        read-only *property* contract above, which only forbids an
+        *implicit* reassignment as a side effect of a runtime-backend switch
+        (§16.5). This method is the intentional path for actually changing
+        it.
+
+        Re-runs _check_embedding_provenance() when embedding_model_name is
+        not None, so the usual mismatch handling applies exactly as it would
+        on a fresh restart with the new model configured: episodes
+        auto-reembed in place, and corpus/chat_turns are flagged stale for a
+        manual reembed_corpus()/reembed_chat_turns() call rather than
+        silently re-ranking with vectors from a different model's geometry.
+        """
+        self._embed_fn = embed_fn
+        self._embedding_model_name = embedding_model_name
+        if embedding_model_name is not None:
+            self._check_embedding_provenance()
+        logger.info(
+            "MemoryManager: embedding source switched — model=%s corpus_stale=%s "
+            "chat_turns_stale=%s",
+            embedding_model_name, self._corpus_stale, self._chat_turns_stale,
+        )
+
     # -----------------------------------------------------------------------
     # Database initialisation
     # -----------------------------------------------------------------------
@@ -630,8 +661,9 @@ class MemoryManager:
                         END;
 
                         CREATE TABLE IF NOT EXISTS retention_settings (
-                            id              INTEGER PRIMARY KEY CHECK (id = 1),
-                            eviction_preset TEXT
+                            id                      INTEGER PRIMARY KEY CHECK (id = 1),
+                            eviction_preset         TEXT,
+                            episode_eviction_preset TEXT    NOT NULL DEFAULT 'forever'
                         );
 
                         CREATE TABLE IF NOT EXISTS news_preferences (
@@ -786,6 +818,26 @@ class MemoryManager:
                     );
                 """)
                 conn.commit()
+
+                # Same self-heal, same rationale, for retention_settings.
+                # episode_eviction_preset (schema v16, docs/architecture/
+                # 20-episode-browsing-ui.md §20.12) — episodic memory
+                # retention decoupled from chat_turns retention, defaulting
+                # to 'forever' (a stable fact doesn't stop being true just
+                # because 30 days passed with no chat about it).
+                cols = {c[1] for c in conn.execute("PRAGMA table_info(retention_settings)").fetchall()}
+                if "episode_eviction_preset" not in cols:
+                    logger.warning(
+                        "MemoryManager: retention_settings missing "
+                        "'episode_eviction_preset' column despite "
+                        "schema_version=%d — self-healing via ALTER TABLE.",
+                        _SCHEMA_VERSION,
+                    )
+                    conn.execute(
+                        "ALTER TABLE retention_settings "
+                        "ADD COLUMN episode_eviction_preset TEXT NOT NULL DEFAULT 'forever';"
+                    )
+                    conn.commit()
 
             finally:
                 conn.close()
@@ -1051,6 +1103,36 @@ class MemoryManager:
                     updated_at      REAL    NOT NULL
                 );
             """)
+
+        if from_version < 16:
+            logger.info(
+                "Applying migration v15→v16: adding retention_settings."
+                "episode_eviction_preset, decoupling episodic-memory "
+                "retention from chat_turns retention (docs/architecture/"
+                "20-episode-browsing-ui.md §20.12). Existing installs "
+                "default to 'forever' for episodes regardless of their "
+                "current chat-history preset — a stable fact doesn't stop "
+                "being true just because 30 days passed with no chat about "
+                "it; the two were only ever coupled by sharing one column."
+            )
+            # CREATE TABLE IF NOT EXISTS first, same defensive posture as the
+            # v13 block above — a DB reporting from_version>=13 should
+            # already have this table, but never assume it (mirrors this
+            # file's established self-heal philosophy elsewhere).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS retention_settings (
+                    id              INTEGER PRIMARY KEY CHECK (id = 1),
+                    eviction_preset TEXT
+                );
+            """)
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(retention_settings)"
+            ).fetchall()}
+            if "episode_eviction_preset" not in cols:
+                conn.execute(
+                    "ALTER TABLE retention_settings "
+                    "ADD COLUMN episode_eviction_preset TEXT NOT NULL DEFAULT 'forever';"
+                )
 
         conn.execute(
             "UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,)
@@ -2150,15 +2232,29 @@ class MemoryManager:
                 conn.close()
 
     # -----------------------------------------------------------------------
-    # Retention settings  (Settings tab — global TTL for chat_turns + episodes)
+    # Retention settings  (Settings tab)
+    #
+    # Two independent presets as of schema v16 (docs/architecture/
+    # 20-episode-browsing-ui.md §20.12) — previously one `eviction_preset`
+    # column governed both chat_turns and episodes identically. Split after
+    # a live report that a stable fact ("the user games on an Xbox Series
+    # X") was silently retracted by the same 30-day window the user had set
+    # for chat-history cleanup, even though the fact was still true and had
+    # been accessed since. get_retention_preset()/set_retention_preset()
+    # below now govern chat_turns ONLY; get_episode_retention_preset()/
+    # set_episode_retention_preset() govern episodes independently and
+    # default to 'forever' (never auto-swept) rather than inheriting
+    # whatever chat-history TTL is set.
     # -----------------------------------------------------------------------
 
     def get_retention_preset(self) -> str | None:
         """
-        Read the current global retention preset.
+        Read the current chat_turns retention preset.
 
         Returns None when no row exists yet — this is the expected default
-        state (the user has never set a preset), not an error.
+        state (the user has never set a preset), not an error. Governs
+        chat_turns only — see get_episode_retention_preset() for episodes'
+        independent setting.
         """
         conn = self._connect()
         try:
@@ -2172,7 +2268,10 @@ class MemoryManager:
 
     def set_retention_preset(self, preset: str) -> None:
         """
-        Insert or update the global retention preset (row id=1).
+        Insert or update the chat_turns retention preset (row id=1).
+
+        Governs chat_turns only — see set_episode_retention_preset() for
+        episodes' independent setting.
 
         Parameters
         ----------
@@ -2204,6 +2303,67 @@ class MemoryManager:
                 )
                 conn.commit()
                 logger.info("set_retention_preset: preset=%r.", preset)
+            finally:
+                conn.close()
+
+    def get_episode_retention_preset(self) -> str:
+        """
+        Read the current episode retention preset. Independent of
+        get_retention_preset() (chat_turns) — see the section-header
+        comment above.
+
+        Unlike get_retention_preset(), always returns a concrete value —
+        'forever' is a real, explicit default here (episodic memory never
+        auto-expires unless the user opts in to a shorter window), not
+        merely "unset".
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT episode_eviction_preset FROM retention_settings WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        return row["episode_eviction_preset"] if row is not None else "forever"
+
+    def set_episode_retention_preset(self, preset: str) -> None:
+        """
+        Insert or update the episode retention preset (row id=1).
+
+        Governs episodes only — see set_retention_preset() for chat_turns'
+        independent setting.
+
+        Parameters
+        ----------
+        preset :
+            Must be one of _RETENTION_PRESETS.
+
+        Raises
+        ------
+        ValueError
+            If preset is not one of the allowed values.
+        """
+        if preset not in _RETENTION_PRESETS:
+            raise ValueError(
+                f"preset {preset!r} not in allowed set. "
+                f"Valid: {sorted(_RETENTION_PRESETS)}"
+            )
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO retention_settings (id, episode_eviction_preset)
+                    VALUES (1, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        episode_eviction_preset = excluded.episode_eviction_preset
+                    """,
+                    (preset,),
+                )
+                conn.commit()
+                logger.info("set_episode_retention_preset: preset=%r.", preset)
             finally:
                 conn.close()
 
@@ -2275,15 +2435,23 @@ class MemoryManager:
 
     def sweep_expired_memory(self) -> dict[str, int]:
         """
-        Enforce the global retention preset: hard-delete chat_turns and
-        soft-retract episodes older than the configured TTL.
+        Enforce each retention preset independently: hard-delete chat_turns
+        older than its TTL, soft-retract episodes older than its own,
+        separate TTL (docs/architecture/20-episode-browsing-ui.md §20.12).
 
-        No-ops (returns zero counts) when no preset is set or the preset is
-        "forever" — an absent/forever preset means "keep everything", not
-        "sweep with an infinite TTL". chat_turns rows are deleted outright
-        (no lifecycle column exists on that table); episodes are marked
-        status='retracted' rather than deleted, matching the existing
-        approve/reject/retract lifecycle so expired episodes stay reversible
+        The two presets are read and applied independently — chat_turns via
+        get_retention_preset(), episodes via get_episode_retention_preset()
+        — since a live report found the two being coupled meant a stable
+        fact ("the user games on an Xbox Series X") got silently retracted
+        by the same 30-day window set for chat-history cleanup, even though
+        it was still true. Each preset no-ops on its own table when unset/
+        "forever" for that table specifically — one table's window being
+        finite doesn't force the other's.
+
+        chat_turns rows are deleted outright (no lifecycle column exists on
+        that table); episodes are marked status='retracted' rather than
+        deleted, matching the existing approve/reject/retract lifecycle so
+        expired episodes stay reversible (Episodes UI's "Reactivate" button)
         and are automatically excluded from every status='active' retrieval
         path (by_subject, by_recency, _score_all_active, get_by_ids).
 
@@ -2294,32 +2462,38 @@ class MemoryManager:
         afterward when episodes_retracted > 0 (main.py's lifespan() does this
         for the startup sweep).
         """
-        preset = self.get_retention_preset()
-        if preset is None or preset == "forever":
-            return {"chat_turns_deleted": 0, "episodes_retracted": 0}
+        chat_preset    = self.get_retention_preset()
+        episode_preset = self.get_episode_retention_preset()
 
-        cutoff = time.time() - _RETENTION_PRESET_SECONDS[preset]
+        chat_turns_deleted = 0
+        episodes_retracted = 0
 
         with self._lock:
             conn = self._connect()
             try:
-                chat_turns_deleted = conn.execute(
-                    "DELETE FROM chat_turns WHERE created_at < ?", (cutoff,)
-                ).rowcount
-                episodes_retracted = conn.execute(
-                    """
-                    UPDATE episodes
-                    SET    status = 'retracted'
-                    WHERE  status = 'active'
-                      AND  created_at < ?
-                    """,
-                    (cutoff,),
-                ).rowcount
+                if chat_preset is not None and chat_preset != "forever":
+                    chat_cutoff = time.time() - _RETENTION_PRESET_SECONDS[chat_preset]
+                    chat_turns_deleted = conn.execute(
+                        "DELETE FROM chat_turns WHERE created_at < ?", (chat_cutoff,)
+                    ).rowcount
+
+                if episode_preset != "forever":
+                    episode_cutoff = time.time() - _RETENTION_PRESET_SECONDS[episode_preset]
+                    episodes_retracted = conn.execute(
+                        """
+                        UPDATE episodes
+                        SET    status = 'retracted'
+                        WHERE  status = 'active'
+                          AND  created_at < ?
+                        """,
+                        (episode_cutoff,),
+                    ).rowcount
+
                 conn.commit()
                 logger.info(
-                    "sweep_expired_memory: preset=%r cutoff=%.0f "
+                    "sweep_expired_memory: chat_preset=%r episode_preset=%r "
                     "chat_turns_deleted=%d episodes_retracted=%d.",
-                    preset, cutoff, chat_turns_deleted, episodes_retracted,
+                    chat_preset, episode_preset, chat_turns_deleted, episodes_retracted,
                 )
                 return {
                     "chat_turns_deleted": chat_turns_deleted,
