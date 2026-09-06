@@ -1219,19 +1219,35 @@ tie-break (`_resolve_negative_filter_conflict`) — a known collision phrase jus
 lexical signal outright, matching this file's general fail-closed posture rather than adding a
 second inference-based escalation path.
 
-**Scope reduction, decided during implementation.** `_lexical_fallback_active(name)` only returns
-true for a real, *named*, non-tuned embedding model with no validated/auto-calibrated entry for
-that specific gate — **not** for true keyword-only (`embedding_model_name is None`, `embed_fn is
-None`), even though `_LEXICAL_FALLBACK_THRESHOLDS` covers every gate. `resolve_gate_tiers(None, …)`
-reports `"tuned"` for labeling purposes only (matching its pre-existing behavior, since None only
-ever occurs in production when `embed_fn` is also None and no cosine scoring can run regardless of
-the label) — the actual runtime gate checks `self._embed_fn is None` directly and stops there.
-Extending lexical fallback to true keyword-only mode was attempted first and reverted: a very large
-pre-existing test surface (P3's github/hacker-news/url-fetch guard tests, the explicit-date signal
-tests, and others) constructs a keyword-only `Planner` specifically to test unrelated
-literal-keyword logic in isolation with zero additional signal expected, and the wider trigger
-condition changed routing outcomes across dozens of those unrelated tests. Tracked as a real,
-undone follow-up — see Open items — not silently dropped.
+**True keyword-only coverage — landed same day, after an initial deliberate deferral.** The first
+cut of this tier only activated `_lexical_fallback_active(name)` for a real, *named*, non-tuned
+embedding model with no validated/auto-calibrated entry for that specific gate — not for true
+keyword-only (`embedding_model_name is None`, `embed_fn is None`), even though
+`_LEXICAL_FALLBACK_THRESHOLDS` covers every gate. That first, broader attempt (wiring the check
+through `resolve_gate_tiers()` itself, so `embedding_model_name is None` resolved per-gate to
+lexical-fallback/disabled like any other non-tuned case) broke ~28 pre-existing tests: a very large
+surface (P3's github/hacker-news/url-fetch guard tests, the explicit-date signal tests, and others)
+constructs a keyword-only `Planner` specifically to test unrelated literal-keyword logic in
+isolation, with zero additional signal expected.
+
+Rather than permanently drop the keyword-only half, the fix was narrowed and finished the same day:
+`resolve_gate_tiers(None, …)` still reports `"tuned"` (labeling-only — that value is inert without
+embed_fn regardless), but `Planner._lexical_fallback_active(name)` now ALSO returns true whenever
+`self._embed_fn is None`, checked directly rather than inferred from the tier label. Of the ~28
+originally-broken tests, ~21 were already resolved by an earlier fix in this same pass (the
+cosine-scale/lexical-scale threshold-mixing bug below); the remaining 7 were updated forward, not
+worked around:
+- `_planner_with_mocked_semantic()` (the shared test helper backing `TestPriority3SemanticGating`/
+  `TestExplicitDateSignal`) now also stubs `_lexical_fallback_active` to `False` — those tests exist
+  specifically to test the mocked cosine gate boundary in isolation, and a real BM25 score against
+  the literal instruction text would otherwise be a second, uncontrolled signal source defeating
+  that isolation.
+- Two genuine keyword-only routing tests (`TestPlannerP3GithubRelease::test_file_op_guard_defers_to_p3`,
+  `TestPlannerP1cPinnedDiff::test_pinned_page_with_tool_need_routes_compound`) had their
+  `tools_to_call` assertions relaxed from exact-list equality to membership checks — a keyword-only
+  session can now legitimately pick up an additional `web_search` signal from BM25 alongside its
+  guarded tool (`file_op`/`url_fetch`), which is the intended, if lower-precision-than-cosine,
+  behavior of this tier, not a bug.
 
 **Two triggers, one shared code path (`main.py`'s `_calibrate_and_persist()`).** Automatic,
 zero-extra-clicks first-time calibration on `POST /settings/embedding-model` — runs only when the
@@ -1261,30 +1277,26 @@ embed_fn-failure resilience and non-unit-length-vector consistency, plus
 `TestCalibrateLexicalThresholds`'s 3 tests covering the real, non-stubbed BM25 calibration run and a
 drift tripwire against `planner._LEXICAL_FALLBACK_THRESHOLDS`); `TestSchemaV17Migration` added to
 `test_retention_sweep.py` (3 tests, mirroring `TestSchemaV16Migration`'s real-on-disk-DB
-convention); `TestCalibratedModelThresholds` (updated for the new tier's presence) and the new
-`TestLexicalFallbackTier` (5 tests — real `_priority3_tool()`/`_priority5_episodic()` routing via
-BM25 for a positive/negative fixture utterance each, plus a regression guard documenting the
-true-keyword-only scope reduction) added to `test_planner_phase3.py`;
+convention); `TestCalibratedModelThresholds` (updated for the new tier's presence) and
+`TestLexicalFallbackTier` (9 tests — real `_priority3_tool()`/`_priority5_episodic()` routing via
+BM25 for both a named-model-with-a-gap and a true-keyword-only session, positive/negative fixture
+utterances each) added to `test_planner_phase3.py`;
 `TestAutomaticFirstTimeCalibration`/`TestReembedRecalibration` added to
 `test_main_embedding_model_switch.py` (6 tests covering both triggers' endpoint wiring);
 `TestHealthGateTiers` (5 tests, updated for the new tier) covering `GET /health`'s new fields. Full
-suite 1576 → 1610 passed. Two real bugs were caught by this work and fixed before landing: (1)
+suite 1576 → 1612 passed. Three real bugs were caught by this work and fixed before landing: (1)
 `_youden_calibrate()`'s "poor separation" branch was returning a real numeric `threshold` even when
 `degenerate=True` (only the separate "empty pool" branch honored the module's own documented
 promise that `threshold is None` whenever `degenerate` is `True`) — now consistent across both
-branches; (2) the lexical tier's first implementation made `embedding_model_name is None` resolve
-to per-gate lexical-fallback/disabled instead of `"tuned"`, which broke ~28 pre-existing tests that
-construct a keyword-only `Planner` as a test shortcut — reverted to the scope-reduced design
-described above before landing.
+branches; (2) a first, broader implementation of the lexical tier made `embedding_model_name is
+None` resolve per-gate through `resolve_gate_tiers()` itself, which broke ~28 pre-existing tests
+that construct a keyword-only `Planner` as a test shortcut — narrowed to check `embed_fn is None`
+directly in `_lexical_fallback_active()` instead, as described above; (3) the shared mocked-cosine
+test helper (`_planner_with_mocked_semantic()`) needed to explicitly neutralize the new lexical path
+once keyword-only coverage landed, or its isolation guarantee (only the mocked score can fire) would
+have been silently broken by real BM25 scoring against the literal instruction text.
 
 **Open items:**
-- The true-keyword-only half of `PLAN_semantic_gating_calibration.md` §9's motivation
-  (`embedding_model_name`/`embed_fn` both `None`) is explicitly NOT covered by the lexical-fallback
-  tier — see the Scope reduction paragraph above. Priority 5's existing static `_EPISODIC_KEYWORDS`
-  bypass (unrelated to and unaffected by this work) partially covers that case for episodic
-  relevance only; Priority 3 search-intent gets nothing extra for a genuinely embedding-less
-  session. A real follow-up, not a rejected idea — would need the affected guard/signal tests'
-  expectations addressed deliberately alongside it, not as a side effect.
 - No UI surface yet for *triggering* recalibration independent of a corpus re-embed (e.g. if only
   the calibration methodology changes, not the corpus) — bundled into "Re-embed Corpus Now" per an
   explicit decision that a separate action wasn't worth the added UI surface, but revisit if that

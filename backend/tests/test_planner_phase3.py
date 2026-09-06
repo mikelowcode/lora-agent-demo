@@ -1075,7 +1075,14 @@ class TestPlannerP3GithubRelease:
     def test_file_op_guard_defers_to_p3(self):
         p = Planner(runtime=make_runtime())
         plan = p.route("read the file about the oMLX release notes", context={})
-        assert plan.tools_to_call == ["file_op"]
+        # The invariant this test guards: P3-github-release must defer,
+        # never fire alongside file_op. "web_search" additionally firing
+        # here is expected since PLAN_semantic_gating_calibration.md §9's
+        # true-keyword-only lexical/BM25 fallback -- this phrasing scores
+        # above the lookup_request lexical threshold (lower precision than
+        # the hand-tuned cosine thresholds by design; see planner.py's
+        # _LEXICAL_FALLBACK_THRESHOLDS module comment).
+        assert "file_op" in plan.tools_to_call
         assert "github_release" not in plan.tools_to_call
 
     # 6. url_fetch guard: a raw URL defers to P3.
@@ -1332,7 +1339,13 @@ class TestPlannerP1cPinnedDiff:
         assert plan.agent              == "wiki_agent"
         assert plan.diff_target        == "localist-software-stack"
         assert plan.diff_target_source == "pinned"
-        assert plan.tools_to_call      == ["url_fetch"]
+        # "web_search" may additionally fire here since
+        # PLAN_semantic_gating_calibration.md §9's true-keyword-only
+        # lexical/BM25 fallback landed -- this phrasing scores above one
+        # of the lexical thresholds (lower precision than the hand-tuned
+        # cosine thresholds by design). The invariant this test actually
+        # guards is url_fetch firing and the pinned-diff routing above.
+        assert "url_fetch" in plan.tools_to_call
         assert plan.compound           is True
         assert plan.tool_signal_source == "keyword"
 
@@ -1889,17 +1902,16 @@ class TestLexicalFallbackTier:
     """
     Functional tests for the model-independent lexical/BM25 fallback tier
     (PLAN_semantic_gating_calibration.md §9) — a model with no validated or
-    persisted-calibration entry for a gate should still route correctly via
+    persisted-calibration entry for a gate (or no embedding source
+    configured at all) should still route correctly via
     _priority3_tool()/_priority5_episodic(), not silently produce nothing.
 
-    Uses a real embed_fn (mocked, returns a fixed vector — its content is
-    irrelevant here since the lexical path never calls it) with a model
-    name that has neither a _VALIDATED_MODEL_THRESHOLDS nor a calibrated_
-    thresholds entry, so every gate resolves to "lexical-fallback" (see
+    Covers both scenarios the tier applies to: a real, named, non-tuned
+    model with a gate-specific coverage gap (embed_fn present but that
+    gate has no validated/auto-calibrated entry — see
     TestCalibratedModelThresholds.test_both_calibrated_and_validated_
-    absent_falls_to_lexical). Deliberately scoped to a real, named,
-    non-tuned model — NOT true keyword-only (embed_fn=None) — per
-    Planner._lexical_fallback_active()'s documented scope reduction.
+    absent_falls_to_lexical), and true keyword-only (embed_fn is None
+    entirely).
     """
 
     def _lexical_planner(self) -> "Planner":
@@ -1951,20 +1963,36 @@ class TestLexicalFallbackTier:
         plan = p._priority5_episodic("What is the capital of France?")
         assert plan is None
 
-    def test_lexical_fallback_not_active_for_true_keyword_only_this_pass(self):
-        # Documents the deliberate scope reduction in
-        # Planner._lexical_fallback_active(): true keyword-only (embed_fn
-        # is None) does NOT get lexical fallback in this pass, even though
-        # _LEXICAL_FALLBACK_THRESHOLDS covers every gate — see that
-        # method's docstring for why (a very large pre-existing test
-        # surface constructs a keyword-only Planner to test unrelated
-        # literal-keyword logic in isolation).
+    def test_lexical_fallback_active_for_true_keyword_only(self):
+        # True keyword-only (embed_fn is None) now DOES get lexical
+        # fallback for every gate (PLAN_semantic_gating_calibration.md §9's
+        # full motivation, including a true zero-config keyword-only
+        # install, not just a model with a gate-specific calibration gap).
         from localist.planner import _GATE_NAMES
 
         p = Planner(runtime=make_runtime())
         assert p._embed_fn is None
         for name in _GATE_NAMES:
-            assert p._lexical_fallback_active(name) is False
+            assert p._lexical_fallback_active(name) is True
+
+    def test_priority3_fires_web_search_via_lexical_fallback_keyword_only(self):
+        # Same positive fixture utterance as
+        # test_priority3_fires_web_search_via_lexical_fallback above, but
+        # with NO embed_fn at all -- true keyword-only, not just a named
+        # model with a coverage gap.
+        p = Planner(runtime=make_runtime())
+        plan = p.route(
+            "Can you look up Apple's price hike for the MacBook Neo and iPad?",
+            context={},
+        )
+        assert "web_search" in plan.tools_to_call
+
+    def test_priority5_fires_fetch_episodic_via_lexical_fallback_keyword_only(self):
+        p = Planner(runtime=make_runtime())
+        instruction = "Help me prepare for the upcoming Claude Impact Lab on August 6th."
+        plan = p._priority5_episodic(instruction)
+        assert plan is not None
+        assert plan.fetch_episodic is True
 
 
 class TestSemanticSearchIntentDiag2:
@@ -2061,6 +2089,15 @@ def _planner_with_mocked_semantic(all_scores: dict[str, float]) -> "Planner":
     Return a Planner whose _semantic_search_intent is patched to return
     all_scores directly, bypassing embed_fn entirely.  Used to test the
     gate logic in _priority3_tool with precise, normalization-free control.
+
+    Also neutralizes the lexical/BM25 fallback path (_lexical_fallback_
+    active() -> False for every gate): this Planner has no embed_fn, so
+    since PLAN_semantic_gating_calibration.md §9's true-keyword-only
+    lexical fallback landed, every gate would otherwise ALSO get real BM25
+    scoring against the real instruction text — a second, uncontrolled
+    signal source that would defeat this helper's whole point (testing the
+    mocked cosine gate boundary in isolation, with nothing else able to
+    fire).
     """
     p = Planner(runtime=make_runtime())
     best_group = max(all_scores, key=lambda g: all_scores[g])
@@ -2068,6 +2105,7 @@ def _planner_with_mocked_semantic(all_scores: dict[str, float]) -> "Planner":
     p._semantic_search_intent = MagicMock(
         return_value=(best_group, best_score, all_scores)
     )
+    p._lexical_fallback_active = MagicMock(return_value=False)
     return p
 
 

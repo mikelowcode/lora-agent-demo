@@ -1971,31 +1971,24 @@ class Planner:
     def _lexical_fallback_active(self, name: str) -> bool:
         """
         Whether gate `name` should be scored via BM25 rather than cosine
-        for this turn — true exactly when this gate's own resolved tier is
-        "lexical-fallback": a real, named, non-tuned embedding model with
+        for this turn.
+
+        True in either of two cases: (a) this gate's own resolved tier is
+        "lexical-fallback" — a real, named, non-tuned embedding model with
         no validated/auto-calibrated threshold for THIS gate specifically
         (see resolve_gate_tiers()), even if embed_fn works fine for other
-        gates.
-
-        Deliberately scoped narrower than the plan's full motivation for
-        this pass: a true keyword-only session (embedding_model_name is
-        None, embed_fn is None) still resolves every gate to "tuned" here
-        (see resolve_gate_tiers()'s docstring) and does NOT get lexical
-        fallback, even though _LEXICAL_FALLBACK_THRESHOLDS would otherwise
-        cover it. That combination touches a very large, pre-existing test
-        surface (P3's github/hacker-news/url-fetch guard tests, the
-        explicit-date signal tests, etc.) that all construct a keyword-only
-        Planner specifically to test unrelated literal-keyword logic in
-        isolation, with no signal beyond it expected. Extending lexical
-        fallback to true keyword-only mode is a real, valuable follow-up
-        (PLAN_semantic_gating_calibration.md §9's stated motivation
-        explicitly includes it) but needs those call sites' expectations
-        addressed deliberately, not as a side effect of this gate-level
-        helper — tracked as an open item, not silently dropped.
+        gates; or (b) there's no embed_fn at all — true keyword-only,
+        where resolve_gate_tiers() reports "tuned" purely for labeling
+        convenience (see its docstring) since cosine scoring can never run
+        either way. Checking embed_fn directly, not just the tier label,
+        is what makes case (b) work: covers the full motivation in
+        PLAN_semantic_gating_calibration.md §9, including a true
+        zero-config keyword-only install, not only a model with a
+        gate-specific calibration gap.
         """
         if name not in _LEXICAL_FALLBACK_THRESHOLDS:
             return False
-        return self._gate_tier.get(name) == "lexical-fallback"
+        return self._embed_fn is None or self._gate_tier.get(name) == "lexical-fallback"
 
     def _lexical_search_intent_scores(self, lowered: str) -> dict[str, float]:
         """
