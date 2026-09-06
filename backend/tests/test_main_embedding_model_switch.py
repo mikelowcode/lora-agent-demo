@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from localist import main
 from localist.memory_manager import MemoryManager
+from localist.threshold_calibration import CalibrationResult, GateCalibration
 
 
 def _settings(**overrides):
@@ -303,3 +304,222 @@ class TestSuccessfulSwitch:
         # In-memory swap still applied despite the .env write failure.
         assert main._state.runtime is not initial_runtime
         assert main._state.memory_manager.embed_fn is main._state.runtime.embed
+
+
+def _fake_calibration_result() -> CalibrationResult:
+    """A deliberately mixed result — two clean gates, two degenerate — so
+    tests can assert both branches of the response/persistence shape at
+    once, mirroring a real partial calibration outcome."""
+    return CalibrationResult(gates={
+        "explicit_search_action": GateCalibration(
+            threshold=0.70, degenerate=False, reason=None,
+            min_positive_score=0.75, max_negative_score=0.40,
+            tpr_at_threshold=0.9, fpr_at_threshold=0.05,
+            positive_count=3, negative_count=17,
+        ),
+        "lookup_request": GateCalibration(
+            threshold=0.60, degenerate=False, reason=None,
+            min_positive_score=0.65, max_negative_score=0.35,
+            tpr_at_threshold=1.0, fpr_at_threshold=0.1,
+            positive_count=3, negative_count=17,
+        ),
+        "research_intent": GateCalibration(
+            threshold=None, degenerate=True,
+            reason="best Youden's J (0.10) below floor (0.5)",
+            min_positive_score=0.3, max_negative_score=0.35,
+            tpr_at_threshold=0.2, fpr_at_threshold=0.1,
+            positive_count=10, negative_count=17,
+        ),
+        "episodic_relevance": GateCalibration(
+            threshold=None, degenerate=True,
+            reason="empty positive or negative pool (embed_fn failures thinned the "
+                   "battery, or this gate has no labeled positive pool to begin with)",
+            min_positive_score=None, max_negative_score=None,
+            tpr_at_threshold=None, fpr_at_threshold=None,
+            positive_count=0, negative_count=20,
+        ),
+    })
+
+
+class TestAutomaticFirstTimeCalibration:
+    """
+    POST /settings/embedding-model's automatic, zero-extra-clicks first-time
+    calibration (PLAN_semantic_gating_calibration.md §5) — a brand-new,
+    non-tuned, non-validated model gets calibrate_thresholds() run and
+    persisted before the controller is rebuilt, so it never lands on fully-
+    disabled semantic gating without at least trying to do better.
+
+    calibrate_thresholds() itself is monkeypatched — its own correctness is
+    threshold_calibration.py's job (see test_threshold_calibration.py); this
+    file only tests that main.py wires the trigger/response/persistence
+    correctly.
+    """
+
+    def test_new_unvalidated_model_triggers_calibration_and_persists(
+        self, client, monkeypatch, tmp_path,
+    ):
+        test_client, _initial_runtime = client
+        monkeypatch.setattr(
+            main, "create_runtime",
+            _fake_create_runtime(embed_model_found=True, models=["mystery-model"]),
+        )
+        monkeypatch.setattr(main, "calibrate_thresholds", MagicMock(return_value=_fake_calibration_result()))
+
+        resp = test_client.post("/settings/embedding-model", json={"model": "mystery-model"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["calibration"] is not None
+        assert body["calibration"]["model"] == "mystery-model"
+        assert body["calibration"]["gates"]["lookup_request"]["threshold"] == 0.60
+        assert body["calibration"]["gates"]["lookup_request"]["degenerate"] is False
+        assert body["calibration"]["gates"]["research_intent"]["degenerate"] is True
+        assert body["calibration"]["gates"]["research_intent"]["threshold"] is None
+
+        # Only the two clean gates persisted — degenerate gates are NULL,
+        # not fabricated, in the stored row (see set_calibrated_thresholds).
+        persisted = main._state.memory_manager.get_calibrated_thresholds("mystery-model")
+        assert persisted == {"explicit_search_action": 0.70, "lookup_request": 0.60}
+
+    def test_already_calibrated_model_does_not_recalibrate_on_switch(
+        self, client, monkeypatch, tmp_path,
+    ):
+        main._state.memory_manager.set_calibrated_thresholds("mystery-model", {"lookup_request": 0.5})
+        test_client, _initial_runtime = client
+        monkeypatch.setattr(
+            main, "create_runtime",
+            _fake_create_runtime(embed_model_found=True, models=["mystery-model"]),
+        )
+        fake_calibrate = MagicMock(side_effect=AssertionError("must not recalibrate on a plain switch — already attempted"))
+        monkeypatch.setattr(main, "calibrate_thresholds", fake_calibrate)
+
+        resp = test_client.post("/settings/embedding-model", json={"model": "mystery-model"})
+
+        assert resp.status_code == 200
+        assert resp.json()["calibration"] is None
+        fake_calibrate.assert_not_called()
+
+    def test_validated_model_never_triggers_calibration(self, client, monkeypatch, tmp_path):
+        test_client, _initial_runtime = client
+        monkeypatch.setattr(
+            main, "create_runtime",
+            _fake_create_runtime(embed_model_found=True, models=["nomic-embed-text:latest"]),
+        )
+        fake_calibrate = MagicMock(side_effect=AssertionError("must not calibrate an already-validated model"))
+        monkeypatch.setattr(main, "calibrate_thresholds", fake_calibrate)
+
+        resp = test_client.post("/settings/embedding-model", json={"model": "nomic-embed-text:latest"})
+
+        assert resp.status_code == 200
+        assert resp.json()["calibration"] is None
+        fake_calibrate.assert_not_called()
+
+    def test_tuned_model_never_triggers_calibration(self, client, monkeypatch, tmp_path):
+        from localist.planner import _TUNED_EMBEDDING_MODEL
+
+        test_client, _initial_runtime = client
+        monkeypatch.setattr(
+            main, "create_runtime",
+            _fake_create_runtime(embed_model_found=True, models=[_TUNED_EMBEDDING_MODEL]),
+        )
+        fake_calibrate = MagicMock(side_effect=AssertionError("must not calibrate the tuned model"))
+        monkeypatch.setattr(main, "calibrate_thresholds", fake_calibrate)
+
+        resp = test_client.post("/settings/embedding-model", json={"model": _TUNED_EMBEDDING_MODEL})
+
+        assert resp.status_code == 200
+        assert resp.json()["calibration"] is None
+        fake_calibrate.assert_not_called()
+        assert main._state.memory_manager.embed_fn is main._state.runtime.embed
+
+
+class TestReembedRecalibration:
+    """
+    POST /memory/reembed's second phase (PLAN_semantic_gating_calibration.md
+    §5) — unlike the switch endpoint's first-time-only trigger, this ALWAYS
+    re-runs calibration for the active non-tuned model, every call, and
+    rebuilds the controller so the refreshed thresholds take effect
+    immediately. Reuses this file's fixture (not test_main_memory_reembed.py's)
+    since it needs a fully wired settings/runtime/templates_dir, which
+    _build_controller requires.
+    """
+
+    def test_reembed_recalibrates_and_rebuilds_controller(self, client, monkeypatch, tmp_path):
+        test_client, _initial_runtime = client
+        monkeypatch.setattr(
+            main, "create_runtime",
+            _fake_create_runtime(embed_model_found=True, models=["mystery-model"]),
+        )
+        # First-time switch: calibrates once (result A).
+        monkeypatch.setattr(main, "calibrate_thresholds", MagicMock(return_value=_fake_calibration_result()))
+        switch_resp = test_client.post("/settings/embedding-model", json={"model": "mystery-model"})
+        assert switch_resp.status_code == 200
+        assert switch_resp.json()["calibration"] is not None
+        controller_after_switch = main._state.controller
+
+        # Second, DIFFERENT result — proves /memory/reembed actually re-runs
+        # calibration rather than reusing the switch-time persisted row.
+        improved_result = CalibrationResult(gates={
+            "explicit_search_action": GateCalibration(
+                threshold=0.72, degenerate=False, reason=None,
+                min_positive_score=0.8, max_negative_score=0.3,
+                tpr_at_threshold=1.0, fpr_at_threshold=0.0,
+                positive_count=3, negative_count=17,
+            ),
+            "lookup_request": GateCalibration(
+                threshold=0.61, degenerate=False, reason=None,
+                min_positive_score=0.7, max_negative_score=0.3,
+                tpr_at_threshold=1.0, fpr_at_threshold=0.0,
+                positive_count=3, negative_count=17,
+            ),
+            "research_intent": GateCalibration(
+                threshold=0.58, degenerate=False, reason=None,
+                min_positive_score=0.6, max_negative_score=0.3,
+                tpr_at_threshold=0.8, fpr_at_threshold=0.1,
+                positive_count=10, negative_count=17,
+            ),
+            "episodic_relevance": GateCalibration(
+                threshold=None, degenerate=True, reason="still degenerate",
+                min_positive_score=0.3, max_negative_score=0.35,
+                tpr_at_threshold=0.1, fpr_at_threshold=0.05,
+                positive_count=13, negative_count=20,
+            ),
+        })
+        fake_calibrate = MagicMock(return_value=improved_result)
+        monkeypatch.setattr(main, "calibrate_thresholds", fake_calibrate)
+
+        reembed_resp = test_client.post("/memory/reembed")
+
+        assert reembed_resp.status_code == 200
+        fake_calibrate.assert_called_once()
+        body = reembed_resp.json()
+        assert body["calibration"] is not None
+        assert body["calibration"]["model"] == "mystery-model"
+        assert body["calibration"]["gates"]["research_intent"]["threshold"] == 0.58
+        assert body["calibration"]["gates"]["research_intent"]["degenerate"] is False
+
+        persisted = main._state.memory_manager.get_calibrated_thresholds("mystery-model")
+        assert persisted == {
+            "explicit_search_action": 0.72,
+            "lookup_request": 0.61,
+            "research_intent": 0.58,
+        }
+        # Controller rebuilt so the new thresholds take effect immediately,
+        # not just on next restart.
+        assert main._state.controller is not controller_after_switch
+
+    def test_reembed_does_not_recalibrate_for_tuned_model(self, client, monkeypatch, tmp_path):
+        # Default fixture state: no embedding model switch has happened, so
+        # _state.active_embedding_model_name is whatever the fixture leaves
+        # it as (None) — nothing to recalibrate, and no embed_fn configured
+        # either, so the endpoint 409s before ever reaching the calibration
+        # branch. This just guards against a regression where recalibration
+        # fires unconditionally regardless of active_embedding_model_name.
+        test_client, _initial_runtime = client
+        fake_calibrate = MagicMock(side_effect=AssertionError("must not calibrate with no active embedding model"))
+        monkeypatch.setattr(main, "calibrate_thresholds", fake_calibrate)
+
+        resp = test_client.post("/memory/reembed")
+
+        assert resp.status_code == 409
+        fake_calibrate.assert_not_called()

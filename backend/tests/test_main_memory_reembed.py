@@ -48,6 +48,7 @@ class TestReembedEndpoint:
             "reembedded": 2,
             "total": 2,
             "model": "mlx-community/embeddinggemma-300m-4bit",
+            "calibration": None,
         }
 
     def test_returns_503_when_memory_manager_not_initialised(self, client):

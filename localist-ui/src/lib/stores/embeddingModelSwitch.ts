@@ -16,11 +16,22 @@
 
 import { writable, type Writable } from 'svelte/store';
 import { apiUrl } from '$lib/api';
+import type { CalibrationResponse } from '$lib/stores/reembedCorpus';
+
+export interface EmbeddingModelResponse {
+  backend:     string;
+  model:       string;
+  persisted:   boolean;
+  active:      boolean;
+  reachable:   boolean;
+  error:       string | null;
+  calibration: CalibrationResponse | null;
+}
 
 export const embeddingModelSwitchLoading: Writable<boolean> = writable(false);
 export const embeddingModelSwitchError: Writable<string | null> = writable(null);
 
-export async function setEmbeddingModel(model: string): Promise<boolean> {
+export async function setEmbeddingModel(model: string): Promise<EmbeddingModelResponse | null> {
   embeddingModelSwitchLoading.set(true);
   embeddingModelSwitchError.set(null);
   try {
@@ -33,10 +44,10 @@ export async function setEmbeddingModel(model: string): Promise<boolean> {
       const detail = await res.json().catch(() => null);
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);
     }
-    return true;
+    return (await res.json()) as EmbeddingModelResponse;
   } catch (err) {
     embeddingModelSwitchError.set(err instanceof Error ? err.message : String(err));
-    return false;
+    return null;
   } finally {
     embeddingModelSwitchLoading.set(false);
   }

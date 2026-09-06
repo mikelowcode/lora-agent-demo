@@ -1060,6 +1060,11 @@ provenance check). 1551 passed / 0 failed full-suite after this change (1540 bas
   still defaults to keyword-only with no in-app nudge to configure Ollama embeddings. Tracked
   alongside the broader "first-run config UX" item already open for the Tauri shell (top-level
   `README.md`'s Roadmap, `backend/packaging/README.md`).
+- **Closed 2026-09-06 (§16.17):** switching to a non-tuned embedding model with no validated
+  threshold set used to mean permanently-disabled semantic gating for it, short of a developer
+  manually re-running the offline diagnostic and shipping a hardcoded fix — live, in-app
+  calibration now runs automatically on switch (and re-runs on demand via "Re-embed Corpus Now"),
+  with results surfaced as a Settings UI trust badge.
 
 ### §16.15 — `window.confirm()` is a silent no-op in the packaged Tauri webview; fixed via `tauri-plugin-dialog` (2026-09-05)
 
@@ -1131,3 +1136,121 @@ session's changes.
   caught and fixed via live injection against a real build, not a test file). A future regression
   here would need the same manual technique to catch, or a Tauri-specific e2e harness this project
   doesn't have yet.
+
+### §16.17 — Live, in-app semantic-gating threshold calibration (2026-09-06)
+
+**The gap this closes.** §16.15's `_VALIDATED_MODEL_THRESHOLDS` dict (planner.py) gave
+`nomic-embed-text:latest` its own validated threshold set instead of falling all the way through to
+disabled semantic gating — but that dict is populated entirely by a developer manually running
+`diagnostics/nomic_embed_text_threshold_probe.py` against a real embedding model, reading a
+markdown report, and hand-transcribing four numbers into source. A user who picks any *other*
+Ollama embedding model via `POST /settings/embedding-model` (§16.14) had no way, from inside the
+running app, to get real semantic gating for it — permanently stuck disabled unless a developer
+repeated that whole manual cycle and shipped a new build. Full design record:
+`PLAN_semantic_gating_calibration.md`.
+
+**`threshold_calibration.py` — `calibrate_thresholds(embed_fn) -> CalibrationResult`.** Reuses the
+exact same fixture battery as the offline diagnostic (extracted into
+`threshold_calibration_fixtures.py`, the single source of truth both paths read from, so a live
+result stays directly comparable to a hand-reviewed one) and `planner.py`'s own
+`_cosine_similarity`/template constants. For each of the four gates
+(`explicit_search_action`/`lookup_request`/`research_intent`/`episodic_relevance`), scores every
+fixture utterance and picks a threshold via **Youden's J statistic** (max TPR−FPR over a fixed
+grid, matching the diagnostic script's own grid so live and offline results stay comparable) —
+chosen over a stricter "lowest threshold with zero false positives" rule because this tier is
+realistically the dominant experience for most end users, who are unlikely to know they need two
+different Ollama models (one chat, one embedding) loaded to get real semantic gating at all, so it
+earns the same statistical rigor as the hand-tuned thresholds, not a cheaper heuristic.
+
+A gate whose best achievable separation doesn't clear `_MIN_ACCEPTABLE_J` (0.5) comes back marked
+**degenerate** (`threshold=None`) rather than shipping an unreviewed, possibly-harmful value —
+resolution is **per-gate**, not per-model: a model can calibrate cleanly for `lookup_request` while
+`episodic_relevance` stays degenerate for it. `explicit_search_action` has no dedicated
+true-positive category in the original battery (a gap inherited from the hand-tuning diagnostics,
+which never built one either); it reuses `lookup_request`'s positive pool as a proxy, exactly how
+the original hand-tuning comments already framed that relationship — a model that doesn't actually
+treat "look up X" phrasing as ESA-positive will legitimately calibrate degenerate for it rather than
+getting a guessed threshold. `_cosine_similarity` normalizes internally, so calibration doesn't
+inherit any assumption that a new, untested model returns unit-length vectors. An `embed_fn`
+failure or empty-vector response mid-battery is caught per-utterance and just thins the affected
+gate's pool (tending it toward degenerate) rather than raising — a wider range of user-picked
+models means more chances of a timeout/error/wrong-dimension response than the two models
+(`embeddinggemma`, `nomic-embed-text`) actually tested against this feature so far.
+
+**Persistence — schema v17, `embedding_model_thresholds`.** One row per model
+(`model TEXT PRIMARY KEY`, one nullable `REAL` column per gate, `calibrated_at REAL NOT NULL`).
+Nullable, not `NOT NULL` as originally sketched — a fixed requirement caught while implementing:
+the per-gate degenerate design means a row must be able to hold a partial result, and `NULL` means
+"degenerate as of `calibrated_at`", not "unset". `MemoryManager.get_calibrated_thresholds(model)`
+returns `None` only when the model has never been calibrated at all, distinct from an empty dict
+(calibrated, every gate came back degenerate) — this distinction is what lets the auto-calibration
+trigger below avoid repeatedly re-attempting a model that's already been tried and failed.
+`set_calibrated_thresholds(model, thresholds)` always replaces the full row, so re-running
+calibration correctly clears a gate that used to calibrate cleanly but no longer does (e.g. the
+battery/methodology improved, or a model was re-pulled under the same tag with different weights).
+
+**`Planner`'s tiered resolution, extended.** Previously two-tier (tuned model's own constants →
+`_VALIDATED_MODEL_THRESHOLDS` → disabled, all-or-nothing per model). Now resolved **per gate**,
+independently, across four tiers: tuned → validated (highest trust, hand-reviewed) →
+**auto-calibrated (new — persisted, `Planner`'s new `calibrated_thresholds` constructor param,
+threaded through `ControllerAgent` from `main.py`'s `_build_controller()` via a new
+`_derive_calibrated_thresholds()` helper, mirroring `_derive_active_embedding_model_name()`)** →
+disabled. A fifth, model-independent lexical/BM25 tier is designed
+(`PLAN_semantic_gating_calibration.md` §9 — Youden's J applied to BM25 scores instead of cosine,
+calibrated once offline and checked into source since BM25 doesn't shift per embedding model,
+covering both the search-intent and episodic-relevance gates) but **not yet built** — see Open
+items. The tier-resolution logic itself was extracted into a standalone, pure
+`planner.resolve_gate_tiers(embedding_model_name, calibrated_thresholds) -> dict[str, str]`
+function so `Planner.__init__` and `GET /health` (below) can never disagree about which tier is
+active for a given gate.
+
+**Two triggers, one shared code path (`main.py`'s `_calibrate_and_persist()`).** Automatic,
+zero-extra-clicks first-time calibration on `POST /settings/embedding-model` — runs only when the
+new model has neither a validated entry nor an existing persisted row (`_needs_first_time_
+calibration()`), and runs *before* `_build_controller()` so the freshly-persisted thresholds are
+what the new `Planner` instance actually resolves. Manual, always-re-runs recalibration bundled
+into `POST /memory/reembed`'s existing "fix things after switching embedding models" flow — the
+button users already associate with that task — as a second phase after the corpus re-embed
+completes, followed by a controller rebuild so the refreshed thresholds take effect immediately
+rather than waiting for a restart. Both endpoints' response bodies gained a `calibration` field
+(the four thresholds plus per-gate `degenerate`/`reason`/sample-size metadata).
+
+**Settings UI trust badge.** `GET /health` gained `active_embedding_model_name` (the *resolved*
+name `Planner` actually compares against `_TUNED_EMBEDDING_MODEL`, not the raw `embedding_model`
+setting — those can differ, e.g. under the `EmbeddingEngine`-fallback-on-clear case) and
+`gate_tiers` (per-gate tier, via `resolve_gate_tiers()`), refreshed on every existing 15s health
+poll — not just transiently after a switch/reembed response, so the badge is correct on page load
+too. The Settings page's "Embedding Model — Ollama" card shows a badge for the *worst* tier across
+the four gates (reusing the existing `badge badge-{variant}` pill pattern), with a hover tooltip
+breaking down each gate individually, and both the switch/reembed confirmation messages now append
+a `"Recalibrated semantic gating for {model} (ESA=…, LR=…, RI=…, episodic=…)."`-style summary when
+calibration ran.
+
+**Test suite:** `test_threshold_calibration.py` (new, 12 tests — Youden's J selection math,
+the degenerate floor, empty-pool handling, and end-to-end `calibrate_thresholds()` behavior
+including embed_fn-failure resilience and non-unit-length-vector consistency); `TestSchemaV17Migration`
+added to `test_retention_sweep.py` (3 tests, mirroring `TestSchemaV16Migration`'s real-on-disk-DB
+convention); `TestCalibratedModelThresholds` added to `test_planner_phase3.py` (6 tests covering the
+new tier's priority, partial-calibration handling, and both-tiers-absent fallback);
+`TestAutomaticFirstTimeCalibration`/`TestReembedRecalibration` added to
+`test_main_embedding_model_switch.py` (6 tests covering both triggers' endpoint wiring);
+`TestHealthGateTiers` (new file, 5 tests) covering `GET /health`'s new fields. Full suite 1576 → 1602
+passed. A real bug was caught by this test-writing pass and fixed before landing:
+`_youden_calibrate()`'s "poor separation" branch was returning a real numeric `threshold` even when
+`degenerate=True` (only the separate "empty pool" branch honored the module's own documented
+promise that `threshold is None` whenever `degenerate` is `True`) — now consistent across both
+branches, so a caller checking `threshold is not None` alone is always safe.
+
+**Open items:**
+- The lexical/BM25 fifth tier (`PLAN_semantic_gating_calibration.md` §9) is designed but not built —
+  today, a model that calibrates fully degenerate (or a true zero-config keyword-only install with
+  no embedding source at all) still lands on fully-disabled semantic gating for the affected gates,
+  same as before this feature. Priority 5's existing static `_EPISODIC_KEYWORDS` bypass (unrelated to
+  and unaffected by this work) partially covers the keyword-only case for episodic relevance only.
+- No UI surface yet for *triggering* recalibration independent of a corpus re-embed (e.g. if only
+  the calibration methodology changes, not the corpus) — bundled into "Re-embed Corpus Now" per an
+  explicit decision that a separate action wasn't worth the added UI surface, but revisit if that
+  assumption turns out wrong in practice.
+- `_VALIDATED_MODEL_THRESHOLDS`'s own addition (§16.15's cross-reference, `nomic-embed-text:latest`)
+  was never actually documented in this file under its own section — a pre-existing doc gap noticed
+  while writing this entry, not fixed here (out of scope for this pass).

@@ -12,10 +12,31 @@
 import { writable, type Writable } from 'svelte/store';
 import { apiUrl } from '$lib/api';
 
+// One gate's outcome within CalibrationResponse — mirrors
+// main.py's GateCalibrationResponse (PLAN_semantic_gating_calibration.md
+// §2/§6).
+export interface GateCalibrationResponse {
+  threshold: number | null;
+  degenerate: boolean;
+  reason: string | null;
+  positive_count: number;
+  negative_count: number;
+}
+
+// Live semantic-gating threshold calibration result, attached to both
+// POST /settings/embedding-model (first-time, on switch) and
+// POST /memory/reembed (every explicit re-trigger) — see main.py's
+// CalibrationResponse.
+export interface CalibrationResponse {
+  model: string;
+  gates: Record<string, GateCalibrationResponse>;
+}
+
 export interface ReembedCorpusResponse {
-  reembedded: number;
-  total:      number;
-  model:      string | null;
+  reembedded:  number;
+  total:       number;
+  model:       string | null;
+  calibration: CalibrationResponse | null;
 }
 
 export const reembedLoading: Writable<boolean> = writable(false);

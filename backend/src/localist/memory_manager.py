@@ -152,7 +152,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_SCHEMA_VERSION   = 16         # increment when schema changes require migration
+_SCHEMA_VERSION   = 17         # increment when schema changes require migration
 _EMBEDDING_DIM    = 768        # EmbeddingGemma-300M-4bit output dimension
 _EMBEDDING_FORMAT = ">768f"    # big-endian float32 × 768
 
@@ -704,6 +704,15 @@ class MemoryManager:
                             full_names_json TEXT    NOT NULL DEFAULT '[]',
                             updated_at      REAL    NOT NULL
                         );
+
+                        CREATE TABLE IF NOT EXISTS embedding_model_thresholds (
+                            model                   TEXT PRIMARY KEY,
+                            explicit_search_action  REAL,
+                            lookup_request          REAL,
+                            research_intent         REAL,
+                            episodic_relevance      REAL,
+                            calibrated_at           REAL NOT NULL
+                        );
                     """)
 
                     conn.execute(
@@ -838,6 +847,24 @@ class MemoryManager:
                         "ADD COLUMN episode_eviction_preset TEXT NOT NULL DEFAULT 'forever';"
                     )
                     conn.commit()
+
+                # Same self-heal, same rationale, for embedding_model_thresholds
+                # (schema v17, live semantic-gating threshold calibration —
+                # PLAN_semantic_gating_calibration.md). A brand-new table, so
+                # no ALTER TABLE case is possible here (unlike the column
+                # additions above) — CREATE TABLE IF NOT EXISTS alone covers
+                # the drift class this section otherwise self-heals.
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS embedding_model_thresholds (
+                        model                   TEXT PRIMARY KEY,
+                        explicit_search_action  REAL,
+                        lookup_request          REAL,
+                        research_intent         REAL,
+                        episodic_relevance      REAL,
+                        calibrated_at           REAL NOT NULL
+                    );
+                """)
+                conn.commit()
 
             finally:
                 conn.close()
@@ -1133,6 +1160,26 @@ class MemoryManager:
                     "ALTER TABLE retention_settings "
                     "ADD COLUMN episode_eviction_preset TEXT NOT NULL DEFAULT 'forever';"
                 )
+
+        if from_version < 17:
+            logger.info(
+                "Applying migration v16→v17: creating embedding_model_thresholds "
+                "table (live semantic-gating threshold calibration, "
+                "PLAN_semantic_gating_calibration.md). Empty on migration — "
+                "existing installs get no rows until a calibration actually "
+                "runs (on the next embedding-model switch or 'Re-embed Corpus "
+                "Now' click); this just makes room for it."
+            )
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS embedding_model_thresholds (
+                    model                   TEXT PRIMARY KEY,
+                    explicit_search_action  REAL,
+                    lookup_request          REAL,
+                    research_intent         REAL,
+                    episodic_relevance      REAL,
+                    calibrated_at           REAL NOT NULL
+                );
+            """)
 
         conn.execute(
             "UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,)
@@ -2364,6 +2411,114 @@ class MemoryManager:
                 )
                 conn.commit()
                 logger.info("set_episode_retention_preset: preset=%r.", preset)
+            finally:
+                conn.close()
+
+    # -----------------------------------------------------------------------
+    # embedding_model_thresholds  (schema v17 — live semantic-gating
+    # threshold calibration, PLAN_semantic_gating_calibration.md)
+    #
+    # One row per embedding model, holding whichever of the four Youden's-J-
+    # selected thresholds from threshold_calibration.calibrate_thresholds()
+    # cleanly calibrated the last time that model was calibrated. Lower
+    # trust than the hand-reviewed _VALIDATED_MODEL_THRESHOLDS dict in
+    # planner.py — see Planner.__init__'s tiered resolution — but strictly
+    # better than the fully-disabled fallback a never-calibrated, non-tuned
+    # model gets today.
+    #
+    # The four gate columns are nullable, not NOT NULL: calibration is
+    # per-gate (a model can separate lookup_request cleanly while episodic_
+    # relevance comes back degenerate — see threshold_calibration.py's
+    # _MIN_ACCEPTABLE_J floor), so the row must be able to hold a partial
+    # result. A NULL column here means "this gate was degenerate (or never
+    # embedded) as of calibrated_at", not "unset" — get_calibrated_thresholds
+    # drops NULL entries entirely rather than surfacing them as 0.0 or some
+    # other placeholder a caller could mistake for a real threshold.
+    # -----------------------------------------------------------------------
+
+    def get_calibrated_thresholds(self, model_name: str) -> dict[str, float] | None:
+        """
+        Return the persisted, non-degenerate calibrated thresholds for
+        `model_name`, or None if it has never been calibrated at all.
+
+        The returned dict may contain fewer than four keys if some gates
+        calibrated as degenerate — callers must resolve any missing gate
+        against a lower trust tier (see Planner's per-gate resolution),
+        never assume all four keys are present.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT explicit_search_action, lookup_request, research_intent, "
+                "episodic_relevance FROM embedding_model_thresholds WHERE model = ?",
+                (model_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
+            return None
+        return {
+            key: row[key]
+            for key in ("explicit_search_action", "lookup_request", "research_intent", "episodic_relevance")
+            if row[key] is not None
+        }
+
+    def set_calibrated_thresholds(self, model_name: str, thresholds: dict[str, float]) -> None:
+        """
+        Insert or replace the calibrated thresholds for `model_name`.
+
+        Parameters
+        ----------
+        thresholds :
+            Typically `CalibrationResult.thresholds` — may contain any
+            subset of (explicit_search_action, lookup_request,
+            research_intent, episodic_relevance). A key omitted here (a
+            gate that calibrated as degenerate) is stored as SQL NULL, not
+            skipped — this call always writes/replaces the full row for
+            `model_name`, so re-running calibration after a methodology
+            change correctly clears a gate that used to calibrate cleanly
+            but no longer does, rather than leaving a stale value behind.
+        """
+        allowed = {"explicit_search_action", "lookup_request", "research_intent", "episodic_relevance"}
+        unknown = set(thresholds) - allowed
+        if unknown:
+            raise ValueError(f"set_calibrated_thresholds: unknown keys {sorted(unknown)}. Allowed: {sorted(allowed)}")
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO embedding_model_thresholds
+                        (model, explicit_search_action, lookup_request,
+                         research_intent, episodic_relevance, calibrated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(model) DO UPDATE SET
+                        explicit_search_action = excluded.explicit_search_action,
+                        lookup_request         = excluded.lookup_request,
+                        research_intent        = excluded.research_intent,
+                        episodic_relevance      = excluded.episodic_relevance,
+                        calibrated_at           = excluded.calibrated_at
+                    """,
+                    (
+                        model_name,
+                        thresholds.get("explicit_search_action"),
+                        thresholds.get("lookup_request"),
+                        thresholds.get("research_intent"),
+                        thresholds.get("episodic_relevance"),
+                        time.time(),
+                    ),
+                )
+                conn.commit()
+                logger.info(
+                    "set_calibrated_thresholds: model=%r ESA=%s LR=%s RI=%s episodic=%s",
+                    model_name,
+                    thresholds.get("explicit_search_action"),
+                    thresholds.get("lookup_request"),
+                    thresholds.get("research_intent"),
+                    thresholds.get("episodic_relevance"),
+                )
             finally:
                 conn.close()
 

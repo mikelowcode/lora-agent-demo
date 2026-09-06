@@ -791,6 +791,7 @@ class ControllerAgent:
         memory_manager:           "MemoryManager | None" = None,
         embed_fn:                 Callable[[str], list[float]] | None = None,
         embedding_model_name:     str | None = None,
+        calibrated_thresholds:    dict[str, float] | None = None,
         episodic_write_approval:  bool = False,
     ) -> None:
         self._runtime        = runtime
@@ -800,6 +801,7 @@ class ControllerAgent:
             memory_manager        = memory_manager,
             embed_fn              = embed_fn,
             embedding_model_name  = embedding_model_name,
+            calibrated_thresholds = calibrated_thresholds,
         )
         self._synthesizer    = Synthesizer(runtime)
         # IntentClassifier retired — routing is now handled by _RulePlanner

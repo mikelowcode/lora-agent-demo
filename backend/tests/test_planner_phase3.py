@@ -1565,17 +1565,18 @@ class TestEpisodicSemanticRelevance:
         assert p._episodic_semantic_relevance("help me prepare for this") is None
 
     def test_disabled_when_semantic_gating_disabled(self):
-        # Same _semantic_gating_disabled flag _semantic_search_intent() uses
-        # (mismatched embedding model) — must disable this gate too, since
-        # the "cosine thresholds aren't portable across models" rationale
-        # applies to this threshold exactly as much as P3's.
+        # Same per-gate tier resolution _semantic_search_intent() uses
+        # (mismatched embedding model, no validated/calibrated entry) —
+        # must disable this gate too, since the "cosine thresholds aren't
+        # portable across models" rationale applies to this threshold
+        # exactly as much as P3's.
         fixed_vec = _unit_vector(8)
         embed_fn = MagicMock(return_value=fixed_vec)
         p = Planner(
             runtime=make_runtime(), embed_fn=embed_fn,
             embedding_model_name="nomic-embed-text",
         )
-        assert p._semantic_gating_disabled is True
+        assert p._gate_tier["episodic_relevance"] == "disabled"
         assert p._episodic_semantic_relevance("help me prepare for this") is None
 
     def test_priority5_fires_via_semantic_gate_with_no_keyword_match(self):
@@ -1649,7 +1650,7 @@ class TestTunedEmbeddingModelGuard:
         with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="nomic-embed-text")
 
-        assert p._semantic_gating_disabled is True
+        assert all(tier == "disabled" for tier in p._gate_tier.values())
         assert "does not match the model" in caplog.text
         assert "nomic-embed-text" in caplog.text
 
@@ -1662,7 +1663,7 @@ class TestTunedEmbeddingModelGuard:
         with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name=_TUNED_EMBEDDING_MODEL)
 
-        assert p._semantic_gating_disabled is False
+        assert all(tier == "tuned" for tier in p._gate_tier.values())
         assert caplog.text == ""
 
         result = p._semantic_search_intent("why don't you do a web search for APC")
@@ -1676,7 +1677,7 @@ class TestTunedEmbeddingModelGuard:
         with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name=None)
 
-        assert p._semantic_gating_disabled is False
+        assert all(tier == "tuned" for tier in p._gate_tier.values())
         assert caplog.text == ""
 
         result = p._semantic_search_intent("why don't you do a web search for APC")
@@ -1701,8 +1702,8 @@ class TestValidatedModelThresholds:
         with caplog.at_level(logging.INFO, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="nomic-embed-text:latest")
 
-        assert p._semantic_gating_disabled is False
-        assert "validated threshold set" in caplog.text
+        assert all(tier == "validated" for tier in p._gate_tier.values())
+        assert "per-gate threshold resolution" in caplog.text
         assert "nomic-embed-text:latest" in caplog.text
 
     def test_validated_model_uses_its_own_thresholds_not_the_tuned_models(self):
@@ -1768,8 +1769,87 @@ class TestValidatedModelThresholds:
         with caplog.at_level(logging.WARNING, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="some-other-model")
 
-        assert p._semantic_gating_disabled is True
-        assert "no validated threshold set of its own" in caplog.text
+        assert all(tier == "disabled" for tier in p._gate_tier.values())
+        assert "neither a validated nor an auto-calibrated threshold" in caplog.text
+
+
+class TestCalibratedModelThresholds:
+    """
+    Unit tests for the third threshold tier — persisted live calibration
+    (MemoryManager.embedding_model_thresholds, schema v17,
+    PLAN_semantic_gating_calibration.md), threaded into Planner via the
+    calibrated_thresholds constructor param. Sibling of
+    TestValidatedModelThresholds: same escape-hatch shape, one tier lower in
+    trust, and resolved per gate rather than per model.
+    """
+
+    def _matching_vec_planner(self, **kwargs) -> "Planner":
+        fixed_vec = _unit_vector(8)
+        embed_fn = MagicMock(return_value=fixed_vec)
+        return Planner(runtime=make_runtime(), embed_fn=embed_fn, **kwargs)
+
+    def test_calibrated_threshold_used_when_no_validated_entry_exists(self, caplog):
+        with caplog.at_level(logging.INFO, logger="localist.planner"):
+            p = self._matching_vec_planner(
+                embedding_model_name="mystery-model:latest",
+                calibrated_thresholds={"research_intent": 0.55, "episodic_relevance": 0.60},
+            )
+
+        assert p._gate_tier["research_intent"] == "auto-calibrated"
+        assert p._gate_tier["episodic_relevance"] == "auto-calibrated"
+        assert p._research_intent_threshold == 0.55
+        assert p._episodic_relevance_threshold == 0.60
+        assert "per-gate threshold resolution" in caplog.text
+
+    def test_gates_absent_from_calibrated_thresholds_stay_disabled(self):
+        # A partial calibration result (e.g. explicit_search_action and
+        # lookup_request calibrated as degenerate — see
+        # threshold_calibration._MIN_ACCEPTABLE_J) must not accidentally
+        # enable those gates; only the gates actually present resolve.
+        p = self._matching_vec_planner(
+            embedding_model_name="mystery-model:latest",
+            calibrated_thresholds={"research_intent": 0.55},
+        )
+        assert p._gate_tier["explicit_search_action"] == "disabled"
+        assert p._gate_tier["lookup_request"] == "disabled"
+        assert p._gate_tier["episodic_relevance"] == "disabled"
+        assert p._semantic_gate_thresholds == {}
+        assert p._episodic_relevance_threshold is None
+
+    def test_both_calibrated_and_validated_absent_still_fully_disabled(self):
+        p = self._matching_vec_planner(
+            embedding_model_name="mystery-model:latest",
+            calibrated_thresholds=None,
+        )
+        assert all(tier == "disabled" for tier in p._gate_tier.values())
+
+    def test_validated_dict_takes_priority_over_calibrated_for_same_gate(self):
+        # nomic-embed-text:latest has a real _VALIDATED_MODEL_THRESHOLDS
+        # entry — a persisted calibration for the same model/gate must never
+        # override the hand-reviewed value.
+        from localist.planner import _VALIDATED_MODEL_THRESHOLDS
+
+        p = self._matching_vec_planner(
+            embedding_model_name="nomic-embed-text:latest",
+            calibrated_thresholds={"lookup_request": 0.99},
+        )
+        assert p._gate_tier["lookup_request"] == "validated"
+        assert p._semantic_gate_thresholds["lookup_request"] == (
+            _VALIDATED_MODEL_THRESHOLDS["nomic-embed-text:latest"]["lookup_request"]
+        )
+
+    def test_calibrated_thresholds_ignored_for_tuned_model(self):
+        # A stray calibrated_thresholds value must never leak in when the
+        # active model IS the tuned model — that tier only ever applies to
+        # non-tuned models.
+        from localist.planner import _TUNED_EMBEDDING_MODEL, _SEMANTIC_GATE_THRESHOLDS
+
+        p = self._matching_vec_planner(
+            embedding_model_name=_TUNED_EMBEDDING_MODEL,
+            calibrated_thresholds={"lookup_request": 0.01},
+        )
+        assert all(tier == "tuned" for tier in p._gate_tier.values())
+        assert p._semantic_gate_thresholds["lookup_request"] == _SEMANTIC_GATE_THRESHOLDS["lookup_request"]
 
 
 class TestSemanticSearchIntentDiag2:

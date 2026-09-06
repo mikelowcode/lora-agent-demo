@@ -171,7 +171,9 @@ from .mcp_server.file_ops import set_project_root as _set_generated_file_root
 from .mcp_tool_dispatcher import MCPToolDispatcher
 from .memory_manager import MemoryManager, EpisodicMemoryWriter, EpisodicMemoryReader
 from . import news_brief
+from .planner import _TUNED_EMBEDDING_MODEL, _VALIDATED_MODEL_THRESHOLDS, resolve_gate_tiers
 from .runtime_factory import available_backends, create_runtime
+from .threshold_calibration import calibrate_thresholds, CalibrationResult
 from . import session_files
 from . import wiki_maintenance_log
 from .warmup import run_cache_warmup as _run_cache_warmup
@@ -385,6 +387,25 @@ def _derive_active_embedding_model_name(
     return None
 
 
+def _derive_calibrated_thresholds(
+    memory_manager:        MemoryManager | None,
+    embedding_model_name:  str | None,
+) -> dict[str, float] | None:
+    """
+    Look up this model's persisted live-calibration result (schema v17,
+    PLAN_semantic_gating_calibration.md), for Planner's third-tier threshold
+    resolution — mirrors _derive_active_embedding_model_name() above.
+
+    None when there's no memory_manager (ephemeral/no-persistence session),
+    no active embedding model (keyword-only), or the model has simply never
+    been calibrated — Planner treats all three identically (that tier
+    contributes nothing, fall through to the next).
+    """
+    if memory_manager is None or embedding_model_name is None:
+        return None
+    return memory_manager.get_calibrated_thresholds(embedding_model_name)
+
+
 # ---------------------------------------------------------------------------
 # Controller construction (extracted so lifespan() and a live runtime-backend
 # switch share one code path — see _build_controller() below).
@@ -417,12 +438,14 @@ def _build_controller(
         memory_manager = memory_manager,
         project_root   = project_root,
     )
+    calibrated_thresholds = _derive_calibrated_thresholds(memory_manager, embedding_model_name)
     controller = ControllerAgent(
         runtime                 = runtime,
         agents                  = [wiki_agent, conversational_agent],
         memory_manager          = memory_manager,
         embed_fn                = embed_fn,
         embedding_model_name    = embedding_model_name,
+        calibrated_thresholds   = calibrated_thresholds,
         episodic_write_approval = settings.episodic_write_approval,
     )
     _run_cache_warmup(controller, runtime, templates_dir)
@@ -831,6 +854,18 @@ class HealthResponse(BaseModel):
     embed_model_found: bool       = False
     embedding_model:   str        = ""
     error:             str | None = None
+    # active_embedding_model_name / gate_tiers (PLAN_semantic_gating_
+    # calibration.md §6): the RESOLVED model name Planner actually compares
+    # against _TUNED_EMBEDDING_MODEL (_state.active_embedding_model_name),
+    # not the raw `embedding_model` setting above — those can differ (e.g.
+    # EmbeddingEngine fallback naming, see _derive_active_embedding_model_
+    # name()). gate_tiers gives the Settings UI a per-gate trust badge
+    # ("tuned"/"validated"/"auto-calibrated"/"disabled") on every page
+    # load/poll, not just transiently after a switch or reembed response —
+    # computed via resolve_gate_tiers(), the same function Planner.__init__
+    # uses, so the two can never disagree.
+    active_embedding_model_name: str | None = None
+    gate_tiers: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentsResponse(BaseModel):
@@ -893,14 +928,97 @@ class EmbeddingModelRequest(BaseModel):
     model: str = ""
 
 
+class GateCalibrationResponse(BaseModel):
+    """One gate's outcome within CalibrationResponse — mirrors
+    threshold_calibration.GateCalibration, trimmed to what a caller/UI
+    actually needs (drops tpr/fpr internals)."""
+    threshold:           float | None
+    degenerate:          bool
+    reason:              str | None
+    positive_count:      int
+    negative_count:      int
+
+
+class CalibrationResponse(BaseModel):
+    """
+    Live semantic-gating threshold calibration result
+    (PLAN_semantic_gating_calibration.md §2/§6) — attached to
+    EmbeddingModelResponse (first-time, on switch) and ReembedCorpusResponse
+    (every explicit re-trigger). `gates` always has all four canonical gate
+    names as keys; a gate with `degenerate=True` (or simply absent from a
+    prior persisted row) has `threshold=None` and was NOT persisted/used —
+    see MemoryManager.get_calibrated_thresholds().
+    """
+    model: str
+    gates: dict[str, GateCalibrationResponse]
+
+
+def _calibration_result_to_response(model: str, result: CalibrationResult) -> CalibrationResponse:
+    return CalibrationResponse(
+        model = model,
+        gates = {
+            name: GateCalibrationResponse(
+                threshold      = gate.threshold,
+                degenerate     = gate.degenerate,
+                reason         = gate.reason,
+                positive_count = gate.positive_count,
+                negative_count = gate.negative_count,
+            )
+            for name, gate in result.gates.items()
+        },
+    )
+
+
+def _calibrate_and_persist(memory_manager: MemoryManager, embedding_model_name: str, embed_fn: Any) -> CalibrationResult:
+    """
+    Run calibrate_thresholds() against `embed_fn` and persist whatever
+    cleanly calibrated (CalibrationResult.thresholds) to MemoryManager's
+    embedding_model_thresholds table, replacing any prior row for this
+    model — see set_calibrated_thresholds() for why this always writes the
+    full row rather than only the newly-calibrated gates. Blocking (embeds
+    the full ~60-utterance battery); callers run this via asyncio.to_thread.
+    """
+    result = calibrate_thresholds(embed_fn)
+    memory_manager.set_calibrated_thresholds(embedding_model_name, result.thresholds)
+    logger.info(
+        "Calibration for %r: %d/%d gates cleanly calibrated (%s).",
+        embedding_model_name, len(result.thresholds), len(result.gates),
+        ", ".join(sorted(result.thresholds)) or "none",
+    )
+    return result
+
+
+def _needs_first_time_calibration(memory_manager: MemoryManager, embedding_model_name: str | None) -> bool:
+    """
+    True when `embedding_model_name` has neither a hand-reviewed entry
+    (_VALIDATED_MODEL_THRESHOLDS) nor an existing persisted calibration row
+    — the trigger condition for POST /settings/embedding-model's automatic,
+    zero-extra-clicks first-time calibration (PLAN_semantic_gating_
+    calibration.md §5). False for the tuned model (needs no calibration at
+    all) and for None (keyword-only — nothing to calibrate).
+
+    Deliberately does NOT re-trigger for a model calibrated before, even if
+    every gate came back degenerate that time — get_calibrated_thresholds()
+    returning {} (row exists, all NULL) still counts as "already attempted",
+    distinct from None ("never attempted"). Re-attempting a fully-degenerate
+    model is what the manual "Re-embed Corpus Now" re-trigger is for.
+    """
+    if embedding_model_name is None or embedding_model_name == _TUNED_EMBEDDING_MODEL:
+        return False
+    if embedding_model_name in _VALIDATED_MODEL_THRESHOLDS:
+        return False
+    return memory_manager.get_calibrated_thresholds(embedding_model_name) is None
+
+
 class EmbeddingModelResponse(BaseModel):
     """Response body for POST /settings/embedding-model."""
-    backend:   str
-    model:     str
-    persisted: bool
-    active:    bool
-    reachable: bool
-    error:     str | None = None
+    backend:     str
+    model:       str
+    persisted:   bool
+    active:      bool
+    reachable:   bool
+    error:       str | None = None
+    calibration: CalibrationResponse | None = None
 
 
 class MemoryStatsResponse(BaseModel):
@@ -925,10 +1043,18 @@ class ReembedCorpusResponse(BaseModel):
     16-runtime-backend-layer.md §16.4's confirmed embedding-provenance
     follow-up). Episodes get no equivalent endpoint — a genuine embedding-
     model mismatch there is auto-corrected at startup, not left pending.
+
+    `calibration` is populated whenever an embedding source is active —
+    POST /memory/reembed always re-runs calibration as its second phase
+    (PLAN_semantic_gating_calibration.md §5), regardless of whether this
+    model was calibrated before; None only if there was no embed_fn to
+    calibrate with (defensive — the endpoint itself already 409s in that
+    case before reaching this response).
     """
-    reembedded: int
-    total:      int
-    model:      str | None
+    reembedded:  int
+    total:       int
+    model:       str | None
+    calibration: CalibrationResponse | None = None
 
 
 class ReembedChatTurnsResponse(BaseModel):
@@ -1465,6 +1591,10 @@ async def get_health() -> HealthResponse:
         embedding_engine = _state.embedding_engine
         embed_available  = embedding_engine is not None and embedding_engine.available
 
+    active_embedding_model_name = _state.active_embedding_model_name
+    calibrated_thresholds = _derive_calibrated_thresholds(_state.memory_manager, active_embedding_model_name)
+    gate_tiers = resolve_gate_tiers(active_embedding_model_name, calibrated_thresholds)
+
     return HealthResponse(
         healthy           = bool(raw.get("reachable") and raw.get("chat_model_found")),
         reachable         = bool(raw.get("reachable", False)),
@@ -1475,6 +1605,8 @@ async def get_health() -> HealthResponse:
         embed_model_found = embed_available,
         embedding_model   = settings.embedding_model if settings is not None else "",
         error             = raw.get("error"),
+        active_embedding_model_name = active_embedding_model_name,
+        gate_tiers                  = gate_tiers,
     )
 
 
@@ -1832,6 +1964,24 @@ async def set_embedding_model(request: EmbeddingModelRequest) -> EmbeddingModelR
         memory_manager.set_embedding_source(embed_fn, embedding_model_name)
         _state.active_embedding_model_name = embedding_model_name
 
+        # Automatic first-time calibration (PLAN_semantic_gating_calibration.md
+        # §5): a brand-new model choice with neither a hand-reviewed nor a
+        # previously-attempted persisted threshold set is never silently left
+        # fully disabled without at least trying to do better — zero extra
+        # clicks. Runs BEFORE _build_controller so the freshly-persisted
+        # thresholds are what the new Planner instance actually resolves.
+        calibration: CalibrationResponse | None = None
+        if embed_fn is not None and _needs_first_time_calibration(memory_manager, embedding_model_name):
+            logger.info(
+                "set_embedding_model: %r has no validated or prior calibrated "
+                "threshold set — running first-time calibration before "
+                "rebuilding the controller.", embedding_model_name,
+            )
+            calibration_result = await asyncio.to_thread(
+                _calibrate_and_persist, memory_manager, embedding_model_name, embed_fn,
+            )
+            calibration = _calibration_result_to_response(embedding_model_name, calibration_result)
+
         wiki_agent, _conversational_agent, controller = await asyncio.to_thread(
             _build_controller,
             settings, candidate_runtime, memory_manager, embed_fn,
@@ -1854,12 +2004,13 @@ async def set_embedding_model(request: EmbeddingModelRequest) -> EmbeddingModelR
             )
 
     return EmbeddingModelResponse(
-        backend   = backend,
-        model     = model,
-        persisted = persisted,
-        active    = bool(embed_fn),
-        reachable = True,
-        error     = error,
+        backend     = backend,
+        model       = model,
+        persisted   = persisted,
+        active      = bool(embed_fn),
+        reachable   = True,
+        error       = error,
+        calibration = calibration,
     )
 
 
@@ -1924,6 +2075,17 @@ async def reembed_corpus() -> ReembedCorpusResponse:
 
     Idempotent — safe to call whether or not the corpus is currently
     flagged stale (a "just refresh it" operation).
+
+    Second phase (PLAN_semantic_gating_calibration.md §5): after the corpus
+    re-embed completes, ALWAYS re-runs semantic-gating threshold calibration
+    for the active model too — the user's own framing for this endpoint is
+    "fix things after switching embedding models," and unlike POST
+    /settings/embedding-model's first-time-only auto-calibration, this is
+    the explicit, cheaply-re-runnable path for a model that calibrated
+    degenerate before, or after the calibration battery/methodology itself
+    improves. Rebuilds the controller afterward, same as a live
+    embedding-model switch, so the new thresholds take effect immediately
+    rather than waiting for the next restart.
     """
     mm = _state.memory_manager
     if mm is None:
@@ -1935,7 +2097,27 @@ async def reembed_corpus() -> ReembedCorpusResponse:
         )
 
     result = await asyncio.to_thread(mm.reembed_corpus)
-    return ReembedCorpusResponse(**result)
+
+    calibration: CalibrationResponse | None = None
+    embedding_model_name = _state.active_embedding_model_name
+    if embedding_model_name is not None and embedding_model_name != _TUNED_EMBEDDING_MODEL:
+        async with _runtime_switch_lock:
+            calibration_result = await asyncio.to_thread(
+                _calibrate_and_persist, mm, embedding_model_name, mm.embed_fn,
+            )
+            calibration = _calibration_result_to_response(embedding_model_name, calibration_result)
+
+            settings = _require_settings()
+            runtime  = _require_runtime()
+            wiki_agent, _conversational_agent, controller = await asyncio.to_thread(
+                _build_controller,
+                settings, runtime, mm, mm.embed_fn,
+                _PROJECT_ROOT, _state.templates_dir, embedding_model_name,
+            )
+            _state.wiki_agent = wiki_agent
+            _state.controller = controller
+
+    return ReembedCorpusResponse(calibration=calibration, **result)
 
 
 @app.post(

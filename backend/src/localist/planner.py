@@ -795,6 +795,14 @@ _EPISODIC_RELEVANCE_THRESHOLD: float = 0.70
 # constant backs, and docs/architecture/16-runtime-backend-layer.md §16.4.
 _TUNED_EMBEDDING_MODEL: str = "mlx-community/embeddinggemma-300m-4bit"
 
+# Canonical names of the four semantic gates, shared by _VALIDATED_MODEL_
+# THRESHOLDS, MemoryManager's embedding_model_thresholds table, and
+# threshold_calibration.CalibrationResult — used to walk the tiered
+# resolution in Planner.__init__ per gate rather than all-or-nothing.
+_GATE_NAMES: tuple[str, ...] = (
+    "explicit_search_action", "lookup_request", "research_intent", "episodic_relevance",
+)
+
 # ---------------------------------------------------------------------------
 # Per-model validated thresholds — an escape hatch from the all-or-nothing
 # _TUNED_EMBEDDING_MODEL guard above, added 2026-09-05 (docs/architecture/
@@ -808,10 +816,16 @@ _TUNED_EMBEDDING_MODEL: str = "mlx-community/embeddinggemma-300m-4bit"
 # Fails closed, same posture as context_profile.py's _VALIDATED_LOCAL_TIERS:
 # only a model with its own entry here, measured against these exact
 # template sets via diagnostics/nomic_embed_text_threshold_probe.py, gets a
-# threshold set. Any other non-tuned model still falls through to full
-# gating disablement in Planner.__init__ — guessing untested thresholds for
-# an unmeasured model risks silently wrong routing, worse than no semantic
-# signal at all.
+# threshold set from THIS dict. A non-tuned model with no entry here no
+# longer falls straight through to full gating disablement, though — see
+# PLAN_semantic_gating_calibration.md: Planner.__init__ next checks a
+# persisted, in-app-measured threshold set (MemoryManager.
+# embedding_model_thresholds, surfaced via the calibrated_thresholds
+# constructor param) before disabling a gate outright. This dict remains
+# the highest-trust tier — hand-reviewed, not just auto-measured — and takes
+# priority over a persisted row for the same model/gate if both exist.
+# Resolution is per-gate, not per-model: a model can be "validated" for one
+# gate, "auto-calibrated" for another, and "disabled" for a third.
 #
 # nomic-embed-text:latest, measured 2026-09-05 (diagnostics/reports/
 # nomic_embed_text_threshold_assessment_2026-09-05.md), against the real
@@ -1108,6 +1122,38 @@ def resolve_graph_target(
     return None  # zero or ambiguous — Tier 3 fallthrough (return None)
 
 
+def resolve_gate_tiers(
+    embedding_model_name:  str | None,
+    calibrated_thresholds: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """
+    Pure per-gate trust-tier resolution — tuned model -> _VALIDATED_MODEL_
+    THRESHOLDS -> calibrated_thresholds -> disabled. Returns all four
+    _GATE_NAMES as keys, each mapped to "tuned" / "validated" /
+    "auto-calibrated" / "disabled".
+
+    Extracted so GET /health can show the same per-gate trust badges
+    Planner.__init__ resolves internally, without constructing a full
+    Planner (which also pre-embeds every template — wasteful for a health
+    check that only needs the tier labels, not the actual threshold
+    values). Planner.__init__ calls this too, so the two can never drift.
+    """
+    if embedding_model_name is None or embedding_model_name == _TUNED_EMBEDDING_MODEL:
+        return {name: "tuned" for name in _GATE_NAMES}
+
+    validated  = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name, {})
+    calibrated = calibrated_thresholds or {}
+    tiers: dict[str, str] = {}
+    for name in _GATE_NAMES:
+        if name in validated:
+            tiers[name] = "validated"
+        elif name in calibrated:
+            tiers[name] = "auto-calibrated"
+        else:
+            tiers[name] = "disabled"
+    return tiers
+
+
 # ---------------------------------------------------------------------------
 # Planner
 # ---------------------------------------------------------------------------
@@ -1160,13 +1206,24 @@ class Planner:
         embedding source is configured at all (keyword-only mode — embed_fn
         is also None in that case, so semantic scoring is already
         short-circuited). When set and it does not match
-        _TUNED_EMBEDDING_MODEL, this Planner instance uses that model's own
-        validated threshold set (_VALIDATED_MODEL_THRESHOLDS) if one exists,
-        or otherwise disables semantic search-intent/episodic-relevance
-        gating entirely — see the module-level comments above
+        _TUNED_EMBEDDING_MODEL, each of the four semantic gates (_GATE_NAMES)
+        is resolved independently: that model's own validated threshold
+        (_VALIDATED_MODEL_THRESHOLDS) if one exists, else its persisted
+        calibrated threshold (calibrated_thresholds, below) if one exists,
+        else that gate is disabled — see the module-level comments above
         _TUNED_EMBEDDING_MODEL and _VALIDATED_MODEL_THRESHOLDS for why
         cosine-similarity thresholds don't transfer across embedding models
         without being independently measured.
+    calibrated_thresholds :
+        Live-calibration results for `embedding_model_name`, as returned by
+        MemoryManager.get_calibrated_thresholds() — a partial dict (any
+        subset of _GATE_NAMES; a gate absent here calibrated as degenerate
+        or was never calibrated) sourced from the embedding_model_thresholds
+        table (schema v17, PLAN_semantic_gating_calibration.md). Lower trust
+        than _VALIDATED_MODEL_THRESHOLDS (auto-measured, never human-
+        reviewed) — only consulted per gate when that gate has no entry in
+        _VALIDATED_MODEL_THRESHOLDS. Ignored entirely when embedding_model_name
+        matches _TUNED_EMBEDDING_MODEL or is None.
     """
 
     # Class-level aliases so callers can access via instance (e.g. p._WEB_SEARCH_KEYWORDS)
@@ -1186,6 +1243,7 @@ class Planner:
         memory_manager:       "MemoryManager | None" = None,
         embed_fn:             Callable[[str], list[float]] | None = None,
         embedding_model_name: str | None = None,
+        calibrated_thresholds: dict[str, float] | None = None,
     ) -> None:
         self._runtime        = runtime
         self._memory_manager = memory_manager
@@ -1199,43 +1257,63 @@ class Planner:
         # silently over/under-fire. None (no embedding source configured at
         # all) is not a mismatch — embed_fn is already None in that case,
         # which already short-circuits semantic scoring.
-        self._embedding_model_name     = embedding_model_name
-        self._semantic_gating_disabled = False
+        self._embedding_model_name  = embedding_model_name
         # Defaults: the tuned model's own thresholds. Overwritten below only
-        # when a different, independently-validated model is active — see
+        # when a different, non-tuned model is active — see
         # _VALIDATED_MODEL_THRESHOLDS above.
         self._semantic_gate_thresholds:     dict[str, float] = dict(_SEMANTIC_GATE_THRESHOLDS)
-        self._research_intent_threshold:    float = _RESEARCH_INTENT_THRESHOLD
-        self._episodic_relevance_threshold: float = _EPISODIC_RELEVANCE_THRESHOLD
+        self._research_intent_threshold:    float | None = _RESEARCH_INTENT_THRESHOLD
+        self._episodic_relevance_threshold: float | None = _EPISODIC_RELEVANCE_THRESHOLD
+
+        # Per-gate provenance ("tuned" / "validated" / "auto-calibrated" /
+        # "disabled") — a model can be "validated" for one gate, "auto-
+        # calibrated" for another, and "disabled" for a third; this is NOT
+        # an all-or-nothing decision for the model as a whole. Shared with
+        # GET /health's trust badges via resolve_gate_tiers() so the two can
+        # never disagree about which tier is actually active.
+        self._gate_tier: dict[str, str] = resolve_gate_tiers(embedding_model_name, calibrated_thresholds)
 
         if embedding_model_name is not None and embedding_model_name != _TUNED_EMBEDDING_MODEL:
-            validated = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name)
-            if validated is not None:
-                self._semantic_gate_thresholds = {
-                    "explicit_search_action": validated["explicit_search_action"],
-                    "lookup_request":         validated["lookup_request"],
-                }
-                self._research_intent_threshold    = validated["research_intent"]
-                self._episodic_relevance_threshold = validated["episodic_relevance"]
+            validated  = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name, {})
+            calibrated = calibrated_thresholds or {}
+            resolved: dict[str, float] = {
+                name: (validated[name] if name in validated else calibrated[name])
+                for name in _GATE_NAMES
+                if self._gate_tier[name] != "disabled"
+            }
+
+            self._semantic_gate_thresholds = {
+                name: resolved[name]
+                for name in ("explicit_search_action", "lookup_request")
+                if name in resolved
+            }
+            self._research_intent_threshold    = resolved.get("research_intent")
+            self._episodic_relevance_threshold = resolved.get("episodic_relevance")
+
+            enabled  = [name for name in _GATE_NAMES if self._gate_tier[name] != "disabled"]
+            disabled = [name for name in _GATE_NAMES if self._gate_tier[name] == "disabled"]
+            if enabled:
                 logger.info(
-                    "Planner: active embedding model %r does not match the "
-                    "tuned model (%r), but has its own validated threshold "
-                    "set — using that instead of disabling semantic gating. "
-                    "See _VALIDATED_MODEL_THRESHOLDS.",
+                    "Planner: active embedding model %r does not match the tuned "
+                    "model (%r) — per-gate threshold resolution: %s. Disabled "
+                    "gates (no validated or auto-calibrated threshold "
+                    "available): %s.",
                     embedding_model_name, _TUNED_EMBEDDING_MODEL,
+                    {name: (resolved[name], self._gate_tier[name]) for name in enabled},
+                    disabled or "none",
                 )
             else:
                 logger.warning(
                     "Planner: active embedding model %r does not match the model "
                     "semantic-gating thresholds were tuned against (%r), and has "
-                    "no validated threshold set of its own — disabling semantic "
-                    "search-intent gating for this session. The thresholds in "
+                    "neither a validated nor an auto-calibrated threshold for any "
+                    "of the four semantic gates — disabling semantic gating "
+                    "entirely for this session. The thresholds in "
                     "_SEMANTIC_GATE_THRESHOLDS / _RESEARCH_INTENT_THRESHOLD / "
                     "_EPISODIC_RELEVANCE_THRESHOLD have no validated meaning "
                     "against embeddings from a different, unmeasured model.",
                     embedding_model_name, _TUNED_EMBEDDING_MODEL,
                 )
-                self._semantic_gating_disabled = True
 
         # Session state for Priority 5 caching (§4.3)
         # _episodic_injected: True once episodic bullets have been injected
@@ -1855,10 +1933,15 @@ class Planner:
         §3, where only 4-8 of 11 filter-matched test utterances (depending
         on LOCALIST_RESEARCH_LOOP_ENABLED) actually reached a conflict.
         """
+        # Per-gate resolution (see Planner.__init__): skip the embed call
+        # entirely only if NOTHING P3 depends on is enabled for this
+        # session — explicit_search_action/lookup_request both absent from
+        # _semantic_gate_thresholds AND research_intent has no threshold
+        # either. A single enabled gate is enough to justify scoring.
         if (
             self._embed_fn is None
             or not self._template_embeddings
-            or self._semantic_gating_disabled
+            or (not self._semantic_gate_thresholds and self._research_intent_threshold is None)
         ):
             return None
 
@@ -1891,7 +1974,7 @@ class Planner:
             # conflict over when the research loop is actually enabled —
             # otherwise nothing acts on its score regardless.
             gated_groups = dict(self._semantic_gate_thresholds)
-            if self._research_loop_enabled():
+            if self._research_loop_enabled() and self._research_intent_threshold is not None:
                 gated_groups["research_intent"] = self._research_intent_threshold
 
             conflicting = [
@@ -2089,6 +2172,7 @@ class Planner:
             "web_search" in tools
             and semantic_result is not None
             and self._research_loop_enabled()
+            and self._research_intent_threshold is not None
         ):
             _, _, all_scores = semantic_result
             research_score = all_scores.get("research_intent", -1.0)
@@ -2639,7 +2723,7 @@ class Planner:
         if (
             self._embed_fn is None
             or not self._episodic_template_embeddings
-            or self._semantic_gating_disabled
+            or self._episodic_relevance_threshold is None
         ):
             return None
 

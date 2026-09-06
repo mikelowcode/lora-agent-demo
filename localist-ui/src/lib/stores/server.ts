@@ -13,6 +13,13 @@ export interface HealthState {
   error?: string;
   last_checked: number | null;
   checking: boolean;
+  // active_embedding_model_name / gate_tiers (PLAN_semantic_gating_
+  // calibration.md §6): the RESOLVED model name Planner compares against
+  // its tuned model, and a per-gate trust tier ("tuned"/"validated"/
+  // "auto-calibrated"/"disabled") for the Settings page's trust badge —
+  // refreshed on every health poll, not just after a switch/reembed.
+  active_embedding_model_name: string | null;
+  gate_tiers: Record<string, string>;
 }
 
 export interface AgentsState {
@@ -30,7 +37,9 @@ const initialHealth: HealthState = {
   embed_model_found: false,
   embedding_model: '',
   last_checked: null,
-  checking: false
+  checking: false,
+  active_embedding_model_name: null,
+  gate_tiers: {}
 };
 
 export const health = writable<HealthState>(initialHealth);

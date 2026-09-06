@@ -31,7 +31,8 @@
   import {
     reembedLoading,
     reembedError,
-    reembedCorpus
+    reembedCorpus,
+    type CalibrationResponse
   } from '$lib/stores/reembedCorpus';
   import {
     newsPreferences,
@@ -96,19 +97,43 @@
     }
   }
 
+  // Live semantic-gating threshold calibration (PLAN_semantic_gating_
+  // calibration.md §2/§6) — short labels for the four gate names, matching
+  // the example message format the plan specifies.
+  const GATE_ABBREV: Record<string, string> = {
+    explicit_search_action: 'ESA',
+    lookup_request:         'LR',
+    research_intent:        'RI',
+    episodic_relevance:     'episodic'
+  };
+
+  function formatCalibrationSummary(calibration: CalibrationResponse | null): string {
+    if (!calibration) return '';
+    const clean = Object.entries(calibration.gates)
+      .filter(([, g]) => !g.degenerate && g.threshold !== null)
+      .map(([name, g]) => `${GATE_ABBREV[name] ?? name}=${g.threshold!.toFixed(2)}`);
+    if (!clean.length) {
+      return ` No gate calibrated cleanly for ${calibration.model} — semantic gating stays disabled for it.`;
+    }
+    return ` Recalibrated semantic gating for ${calibration.model} (${clean.join(', ')}).`;
+  }
+
   async function handleReembedCorpus() {
     const proceed = await confirmDialog(
       'Re-embed the wiki/raw corpus now with the active embedding model? ' +
       'This blocks until every document has been re-embedded, which can take ' +
-      'a while for a large corpus.'
+      'a while for a large corpus. This also re-runs semantic-gating threshold ' +
+      'calibration for the active model.'
     );
     if (!proceed) return;
 
     reembedResult = null;
     const result = await reembedCorpus();
     if (result) {
-      reembedResult = `Re-embedded ${result.reembedded} of ${result.total} documents.`;
+      reembedResult = `Re-embedded ${result.reembedded} of ${result.total} documents.`
+        + formatCalibrationSummary(result.calibration);
       await loadMemoryStats();
+      await checkHealth();
     }
   }
 
@@ -195,15 +220,49 @@
 
   async function handleEmbeddingModelPick(value: string) {
     embeddingModelResult = null;
-    const ok = await setEmbeddingModel(value);
-    if (ok) {
-      embeddingModelResult = value
+    const body = await setEmbeddingModel(value);
+    if (body) {
+      embeddingModelResult = (value
         ? `Embedding model set to ${value}.`
-        : 'Embedding model cleared — back to keyword-only (or EmbeddingEngine, if enabled).';
+        : 'Embedding model cleared — back to keyword-only (or EmbeddingEngine, if enabled).')
+        + formatCalibrationSummary(body.calibration);
       await checkHealth();
       await loadMemoryStats();
     }
   }
+
+  // Trust-badge tiers (PLAN_semantic_gating_calibration.md §6) — refreshed
+  // on every health poll, not just transiently after a switch/reembed, so
+  // the badge is correct on page load too. A model can be "validated" for
+  // one gate and "disabled" for another (per-gate resolution, never a
+  // single all-or-nothing verdict) — the badge shows the WORST tier across
+  // all four gates, with a tooltip listing the per-gate breakdown.
+  const GATE_TIER_RANK: Record<string, number> = {
+    disabled: 0, 'auto-calibrated': 1, validated: 2, tuned: 3
+  };
+  const GATE_TIER_LABEL: Record<string, string> = {
+    tuned: 'hand-validated',
+    validated: 'hand-validated',
+    'auto-calibrated': 'auto-calibrated',
+    disabled: 'gating disabled'
+  };
+  const GATE_TIER_BADGE_CLASS: Record<string, string> = {
+    tuned: 'badge-success',
+    validated: 'badge-success',
+    'auto-calibrated': 'badge-warning',
+    disabled: 'badge-muted'
+  };
+
+  $: gateTierEntries = Object.entries($health.gate_tiers ?? {});
+  $: worstGateTier = gateTierEntries.length
+    ? gateTierEntries.reduce(
+        (worst, [, tier]) => (GATE_TIER_RANK[tier] < GATE_TIER_RANK[worst] ? tier : worst),
+        'tuned'
+      )
+    : null;
+  $: gateTierTooltip = gateTierEntries
+    .map(([gate, tier]) => `${GATE_ABBREV[gate] ?? gate}: ${GATE_TIER_LABEL[tier] ?? tier}`)
+    .join('\n');
 
   function onEmbeddingModelSelectChange(e: Event) {
     const value = (e.target as HTMLSelectElement).value;
@@ -401,7 +460,10 @@
         Re-embeds the wiki/raw corpus with the active embedding model via
         <code>POST /memory/reembed</code> (docs/architecture/16-runtime-backend-layer.md §16.4).
         Needed after switching embedding models or embed sources — until then, retrieval
-        falls back to keyword-only ranking.
+        falls back to keyword-only ranking. Also re-runs semantic-gating threshold
+        calibration for the active model (see the Embedding Model card's trust badge below) —
+        useful to retry a model that calibrated poorly, or after the calibration method itself
+        improves.
       </p>
       {#if corpusStale}
         <span class="badge badge-warning">
@@ -460,7 +522,17 @@
     {#if $modelConfig.backend === 'ollama'}
       <!-- Embedding model (Ollama only — see docs/architecture/16-runtime-backend-layer.md §16.4) -->
       <section class="settings-card">
-        <div class="card-title">Embedding Model — Ollama</div>
+        <div class="card-title">
+          Embedding Model — Ollama
+          {#if worstGateTier}
+            <span
+              class="badge {GATE_TIER_BADGE_CLASS[worstGateTier]}"
+              title={gateTierTooltip}
+            >
+              {GATE_TIER_LABEL[worstGateTier]}
+            </span>
+          {/if}
+        </div>
         <div class="field-group">
           <select
             id="embedding-model"
@@ -482,7 +554,10 @@
             alternative to MLX EmbeddingEngine, which the packaged app doesn't bundle.
             Applies immediately; switching models flags the wiki/raw corpus and chat
             history stale for re-embedding (see the Corpus Embeddings card above) —
-            episodic memory re-embeds itself automatically.
+            episodic memory re-embeds itself automatically. Switching to a new model
+            also triggers automatic first-time semantic-gating calibration; "Re-embed
+            Corpus Now" re-runs it on demand. The badge above shows the least-trusted
+            tier across the four gates it drives — hover for the per-gate breakdown.
           </p>
         </div>
         {#if $embeddingModelSwitchLoading}
@@ -878,6 +953,11 @@
     font-size: 12.5px;
     font-weight: 500;
     color: var(--text-primary);
+  }
+
+  .card-title .badge {
+    margin-left: var(--sp-2);
+    vertical-align: middle;
   }
 
   .card-desc {

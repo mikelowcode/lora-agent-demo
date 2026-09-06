@@ -319,3 +319,77 @@ class TestSchemaV16Migration:
         mm = MemoryManager(db_path=tmp_path / "fresh.db")
         assert mm.get_retention_preset() is None
         assert mm.get_episode_retention_preset() == "forever"
+
+
+class TestSchemaV17Migration:
+    """
+    Schema v17 (PLAN_semantic_gating_calibration.md): adds
+    embedding_model_thresholds, the persisted-calibration table backing
+    MemoryManager.get/set_calibrated_thresholds(). Mirrors
+    TestSchemaV16Migration's convention exactly — a real v16 database (not a
+    mock), migrated by opening it with MemoryManager.
+    """
+
+    def _v16_database(self, tmp_path):
+        path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (16);
+            CREATE TABLE chat_turns (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                content   TEXT NOT NULL,
+                embedding BLOB
+            );
+            CREATE TABLE retention_settings (
+                id                      INTEGER PRIMARY KEY CHECK (id = 1),
+                eviction_preset         TEXT,
+                episode_eviction_preset TEXT NOT NULL DEFAULT 'forever'
+            );
+        """)
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_v16_database_migrates_to_v17_with_new_table(self, tmp_path):
+        path = self._v16_database(tmp_path)
+
+        mm = MemoryManager(db_path=path)
+
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(embedding_model_thresholds)").fetchall()}
+        conn.close()
+
+        from localist.memory_manager import _SCHEMA_VERSION
+        assert version == _SCHEMA_VERSION == 17
+        assert cols == {
+            "model", "explicit_search_action", "lookup_request",
+            "research_intent", "episodic_relevance", "calibrated_at",
+        }
+        # Empty on migration — no row exists until a calibration actually runs.
+        assert mm.get_calibrated_thresholds("any-model") is None
+
+    def test_v16_database_get_set_round_trip_after_migration(self, tmp_path):
+        path = self._v16_database(tmp_path)
+        mm = MemoryManager(db_path=path)
+
+        mm.set_calibrated_thresholds("mystery-model:latest", {
+            "lookup_request": 0.62, "research_intent": 0.58,
+        })
+
+        assert mm.get_calibrated_thresholds("mystery-model:latest") == {
+            "lookup_request": 0.62, "research_intent": 0.58,
+        }
+        # Untouched retention behavior from v16 — this migration doesn't
+        # regress the prior one.
+        assert mm.get_episode_retention_preset() == "forever"
+
+    def test_fresh_db_has_embedding_model_thresholds_table(self, tmp_path):
+        mm = MemoryManager(db_path=tmp_path / "fresh.db")
+        assert mm.get_calibrated_thresholds("any-model") is None
+        mm.set_calibrated_thresholds("any-model", {"lookup_request": 0.5})
+        assert mm.get_calibrated_thresholds("any-model") == {"lookup_request": 0.5}
