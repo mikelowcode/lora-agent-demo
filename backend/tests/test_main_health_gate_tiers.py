@@ -91,13 +91,17 @@ class TestHealthGateTiers:
         gate_tiers = resp.json()["gate_tiers"]
         assert gate_tiers["lookup_request"] == "auto-calibrated"
         assert gate_tiers["research_intent"] == "auto-calibrated"
-        assert gate_tiers["explicit_search_action"] == "disabled"
-        assert gate_tiers["episodic_relevance"] == "disabled"
+        # Not "disabled" -- PLAN_semantic_gating_calibration.md §9's
+        # model-independent lexical/BM25 fallback tier covers every gate,
+        # so a gate with neither a validated nor a persisted calibration
+        # entry still gets real signal.
+        assert gate_tiers["explicit_search_action"] == "lexical-fallback"
+        assert gate_tiers["episodic_relevance"] == "lexical-fallback"
 
-    def test_never_calibrated_unvalidated_model_reports_all_disabled(self, client):
+    def test_never_calibrated_unvalidated_model_reports_all_lexical_fallback(self, client):
         main._state.active_embedding_model_name = "totally-unknown-model:latest"
 
         resp = client.get("/health")
 
         assert resp.status_code == 200
-        assert resp.json()["gate_tiers"] == {name: "disabled" for name in _GATE_NAMES}
+        assert resp.json()["gate_tiers"] == {name: "lexical-fallback" for name in _GATE_NAMES}

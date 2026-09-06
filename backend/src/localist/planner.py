@@ -38,6 +38,13 @@ from .mcp_tool_dispatcher import (
 # level cache, not a per-request dependency, so no constructor plumbing.
 from . import session_files as _session_files
 
+# Backs the lexical/BM25 fallback tier (_LEXICAL_FALLBACK_THRESHOLDS below,
+# PLAN_semantic_gating_calibration.md §9) — scores the same trigger-phrase
+# templates cosine similarity uses, but via BM25, so a gate that has no
+# usable embedding-based threshold (no embed_fn at all, or a model that
+# calibrated degenerate for it) still gets real signal instead of nothing.
+from . import bm25 as _bm25
+
 if TYPE_CHECKING:
     from .memory_manager import MemoryManager
 
@@ -870,6 +877,44 @@ _VALIDATED_MODEL_THRESHOLDS: dict[str, dict[str, float]] = {
 
 
 # ---------------------------------------------------------------------------
+# Lexical/BM25 fallback tier — the fifth, model-independent threshold tier
+# (PLAN_semantic_gating_calibration.md §9), sitting below "auto-calibrated"
+# and above "disabled" in resolve_gate_tiers()'s per-gate resolution.
+#
+# Unlike every other threshold in this file, these don't score cosine
+# similarity against embed_fn output — they score bm25.score_documents()
+# against the SAME _SEARCH_INTENT_TEMPLATES / _EPISODIC_RELEVANCE_TEMPLATES
+# trigger phrases (see Planner._lexical_search_intent_scores() /
+# _lexical_episodic_relevance()). Since BM25 operates on the raw request
+# text and never touches an embedding model at all, this tier applies
+# identically regardless of which embedding model is active — or whether
+# one is configured at all. That's also why it's calibrated ONCE, offline,
+# and checked into source here rather than needing a live per-model
+# calibration UI flow of its own: diagnostics/calibrate_lexical_fallback_
+# thresholds.py, re-run only if the fixture battery or BM25 scoring itself
+# changes, not per embedding model.
+#
+# Values below are Youden's-J-optimal (same selection method as the
+# embedding-based tiers, deliberately — this tier is realistically the
+# DOMINANT experience for many end users, who are unlikely to know they
+# need two different Ollama models, one chat and one embedding, loaded to
+# get real semantic gating at all; it earns the same rigor, not a cheaper
+# heuristic) against threshold_calibration_fixtures.py, scored 2026-09-06.
+# All four gates cleared _MIN_ACCEPTABLE_J (threshold_calibration.py) —
+# no gate needed to fall through past this tier to disabled.
+# BM25 scores are unbounded (bm25.py's module docstring), so these numbers
+# have no relationship to the 0-1 cosine-similarity scale used everywhere
+# else in this file — never compare a BM25 score against a value from
+# _SEMANTIC_GATE_THRESHOLDS/_VALIDATED_MODEL_THRESHOLDS or vice versa.
+_LEXICAL_FALLBACK_THRESHOLDS: dict[str, float] = {
+    "explicit_search_action": 2.833302343894667,
+    "lookup_request":         2.5611057478287096,
+    "research_intent":        3.144647104366297,
+    "episodic_relevance":     3.3990800432380546,
+}
+
+
+# ---------------------------------------------------------------------------
 # research_intent upgrade  (web_search -> research, plain on/off — no
 # shadow phase)
 #
@@ -1128,20 +1173,31 @@ def resolve_gate_tiers(
 ) -> dict[str, str]:
     """
     Pure per-gate trust-tier resolution — tuned model -> _VALIDATED_MODEL_
-    THRESHOLDS -> calibrated_thresholds -> disabled. Returns all four
-    _GATE_NAMES as keys, each mapped to "tuned" / "validated" /
-    "auto-calibrated" / "disabled".
+    THRESHOLDS -> calibrated_thresholds -> _LEXICAL_FALLBACK_THRESHOLDS ->
+    disabled. Returns all four _GATE_NAMES as keys, each mapped to "tuned" /
+    "validated" / "auto-calibrated" / "lexical-fallback" / "disabled".
 
     Extracted so GET /health can show the same per-gate trust badges
     Planner.__init__ resolves internally, without constructing a full
     Planner (which also pre-embeds every template — wasteful for a health
     check that only needs the tier labels, not the actual threshold
     values). Planner.__init__ calls this too, so the two can never drift.
+
+    embedding_model_name=None is treated the same as the tuned model here
+    (both get "tuned") purely as a labeling convenience — in production,
+    None only ever occurs when embed_fn is also None (true keyword-only),
+    so a "tuned" cosine-scale threshold value is inert either way (nothing
+    ever scores against it without embed_fn). The runtime decision of
+    whether a gate actually needs the lexical/BM25 path is made
+    separately, in Planner._lexical_fallback_active(), which checks
+    `self._embed_fn is None` directly rather than relying on this tier
+    label — so a genuinely embedding-less session still gets real lexical
+    signal despite this function reporting "tuned" for it.
     """
     if embedding_model_name is None or embedding_model_name == _TUNED_EMBEDDING_MODEL:
         return {name: "tuned" for name in _GATE_NAMES}
 
-    validated  = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name, {})
+    validated  = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name, {}) if embedding_model_name else {}
     calibrated = calibrated_thresholds or {}
     tiers: dict[str, str] = {}
     for name in _GATE_NAMES:
@@ -1149,6 +1205,8 @@ def resolve_gate_tiers(
             tiers[name] = "validated"
         elif name in calibrated:
             tiers[name] = "auto-calibrated"
+        elif name in _LEXICAL_FALLBACK_THRESHOLDS:
+            tiers[name] = "lexical-fallback"
         else:
             tiers[name] = "disabled"
     return tiers
@@ -1276,10 +1334,19 @@ class Planner:
         if embedding_model_name is not None and embedding_model_name != _TUNED_EMBEDDING_MODEL:
             validated  = _VALIDATED_MODEL_THRESHOLDS.get(embedding_model_name, {})
             calibrated = calibrated_thresholds or {}
+            # Only tuned/validated/auto-calibrated gates get a cosine-scale
+            # threshold here -- a "lexical-fallback" gate is scored
+            # separately, via BM25 (_lexical_search_intent_scores() /
+            # _lexical_episodic_relevance(), against _LEXICAL_FALLBACK_
+            # THRESHOLDS below), an entirely different, unbounded scale
+            # that must never be compared against a cosine score. Mixing
+            # the two into one dict here would silently make a lexical-
+            # fallback gate's threshold value unreachable by cosine scores
+            # (which never exceed 1.0) without ever raising an error.
             resolved: dict[str, float] = {
                 name: (validated[name] if name in validated else calibrated[name])
                 for name in _GATE_NAMES
-                if self._gate_tier[name] != "disabled"
+                if self._gate_tier[name] in ("validated", "auto-calibrated")
             }
 
             self._semantic_gate_thresholds = {
@@ -1290,25 +1357,26 @@ class Planner:
             self._research_intent_threshold    = resolved.get("research_intent")
             self._episodic_relevance_threshold = resolved.get("episodic_relevance")
 
-            enabled  = [name for name in _GATE_NAMES if self._gate_tier[name] != "disabled"]
-            disabled = [name for name in _GATE_NAMES if self._gate_tier[name] == "disabled"]
-            if enabled:
+            cosine_enabled  = sorted(resolved)
+            lexical_enabled = [name for name in _GATE_NAMES if self._gate_tier[name] == "lexical-fallback"]
+            disabled        = [name for name in _GATE_NAMES if self._gate_tier[name] == "disabled"]
+            if cosine_enabled or lexical_enabled:
                 logger.info(
                     "Planner: active embedding model %r does not match the tuned "
-                    "model (%r) — per-gate threshold resolution: %s. Disabled "
-                    "gates (no validated or auto-calibrated threshold "
-                    "available): %s.",
+                    "model (%r) — per-gate threshold resolution: cosine=%s "
+                    "lexical-fallback=%s disabled=%s.",
                     embedding_model_name, _TUNED_EMBEDDING_MODEL,
-                    {name: (resolved[name], self._gate_tier[name]) for name in enabled},
+                    {name: (resolved[name], self._gate_tier[name]) for name in cosine_enabled},
+                    lexical_enabled or "none",
                     disabled or "none",
                 )
             else:
                 logger.warning(
                     "Planner: active embedding model %r does not match the model "
                     "semantic-gating thresholds were tuned against (%r), and has "
-                    "neither a validated nor an auto-calibrated threshold for any "
-                    "of the four semantic gates — disabling semantic gating "
-                    "entirely for this session. The thresholds in "
+                    "neither a validated, auto-calibrated, nor lexical-fallback "
+                    "threshold for any of the four semantic gates — disabling "
+                    "semantic gating entirely for this session. The thresholds in "
                     "_SEMANTIC_GATE_THRESHOLDS / _RESEARCH_INTENT_THRESHOLD / "
                     "_EPISODIC_RELEVANCE_THRESHOLD have no validated meaning "
                     "against embeddings from a different, unmeasured model.",
@@ -1900,6 +1968,70 @@ class Planner:
                 return kw
         return None
 
+    def _lexical_fallback_active(self, name: str) -> bool:
+        """
+        Whether gate `name` should be scored via BM25 rather than cosine
+        for this turn — true exactly when this gate's own resolved tier is
+        "lexical-fallback": a real, named, non-tuned embedding model with
+        no validated/auto-calibrated threshold for THIS gate specifically
+        (see resolve_gate_tiers()), even if embed_fn works fine for other
+        gates.
+
+        Deliberately scoped narrower than the plan's full motivation for
+        this pass: a true keyword-only session (embedding_model_name is
+        None, embed_fn is None) still resolves every gate to "tuned" here
+        (see resolve_gate_tiers()'s docstring) and does NOT get lexical
+        fallback, even though _LEXICAL_FALLBACK_THRESHOLDS would otherwise
+        cover it. That combination touches a very large, pre-existing test
+        surface (P3's github/hacker-news/url-fetch guard tests, the
+        explicit-date signal tests, etc.) that all construct a keyword-only
+        Planner specifically to test unrelated literal-keyword logic in
+        isolation, with no signal beyond it expected. Extending lexical
+        fallback to true keyword-only mode is a real, valuable follow-up
+        (PLAN_semantic_gating_calibration.md §9's stated motivation
+        explicitly includes it) but needs those call sites' expectations
+        addressed deliberately, not as a side effect of this gate-level
+        helper — tracked as an open item, not silently dropped.
+        """
+        if name not in _LEXICAL_FALLBACK_THRESHOLDS:
+            return False
+        return self._gate_tier.get(name) == "lexical-fallback"
+
+    def _lexical_search_intent_scores(self, lowered: str) -> dict[str, float]:
+        """
+        BM25 max-score per group in _SEARCH_INTENT_TEMPLATES, scored
+        against `lowered` — the lexical-fallback tier's counterpart to
+        _semantic_search_intent()'s cosine group_scores.
+
+        Always computable (no embed_fn/embedding model involved at all),
+        deliberately kept separate and additive rather than merged into
+        _semantic_search_intent() itself — mixing a cosine score and a BM25
+        score into one dict would be comparing numbers on two entirely
+        different, non-comparable scales (see _LEXICAL_FALLBACK_THRESHOLDS'
+        module comment). Only called for gates whose resolved tier is
+        "lexical-fallback" (see _priority3_tool) — computing it
+        unconditionally on every turn would be wasted work for the common
+        case of a working embedding model.
+        """
+        return {
+            group: max(
+                _bm25.score_documents(lowered, [(i, p) for i, p in enumerate(phrases)]).values()
+            )
+            for group, phrases in _SEARCH_INTENT_TEMPLATES.items()
+        }
+
+    def _lexical_episodic_relevance(self, lowered: str) -> float:
+        """
+        BM25 max score of `lowered` against _EPISODIC_RELEVANCE_TEMPLATES —
+        the lexical-fallback tier's counterpart to
+        _episodic_semantic_relevance(). Always computable; only called when
+        episodic_relevance's resolved tier is "lexical-fallback" (see
+        _priority5_episodic).
+        """
+        documents = [(i, p) for i, p in enumerate(_EPISODIC_RELEVANCE_TEMPLATES)]
+        scores = _bm25.score_documents(lowered, documents)
+        return max(scores.values()) if scores else 0.0
+
     def _semantic_search_intent(
         self, lowered: str
     ) -> tuple[str, float, dict[str, float]] | None:
@@ -2182,6 +2314,56 @@ class Planner:
                     "Planner: Priority 3 — upgraded web_search to research "
                     "(research_intent=%.3f >= %.2f).",
                     research_score, self._research_intent_threshold,
+                )
+
+        # Lexical/BM25 fallback (PLAN_semantic_gating_calibration.md §9) --
+        # additive to the cosine path above, not a replacement: a gate
+        # whose resolved tier is "lexical-fallback" (no working embed_fn at
+        # all, or a model that calibrated degenerate for THIS gate
+        # specifically even though embed_fn works for others) gets real
+        # signal here instead of never firing. Computed lazily -- only if
+        # at least one gate actually needs it -- since it's wasted work for
+        # the common case of a fully-working embedding model. Reuses the
+        # cosine path's negative-filter collision list as a conservative
+        # pre-filter, but WITHOUT the model-based tie-break
+        # (_resolve_negative_filter_conflict) that path uses for a genuine
+        # conflict -- a known collision phrase just suppresses the lexical
+        # signal outright here, matching this file's general fail-closed
+        # posture on ambiguity rather than adding a second inference-based
+        # escalation path.
+        lexical_esa_lr_gates = [
+            g for g in ("explicit_search_action", "lookup_request")
+            if self._lexical_fallback_active(g)
+        ]
+        lexical_ri_gate = self._lexical_fallback_active("research_intent")
+        if (lexical_esa_lr_gates or lexical_ri_gate) and not any(
+            neg in lowered for neg in _ALL_SEARCH_NEGATIVE_FILTERS
+        ):
+            lexical_scores = self._lexical_search_intent_scores(lowered)
+
+            if lexical_esa_lr_gates and "web_search" not in tools:
+                fired_lexical = [
+                    g for g in lexical_esa_lr_gates
+                    if lexical_scores.get(g, 0.0) >= _LEXICAL_FALLBACK_THRESHOLDS[g]
+                ]
+                if fired_lexical:
+                    tools.append("web_search")
+                    logger.debug(
+                        "Planner: Priority 3 — web_search signal detected via "
+                        "lexical-fallback gate(s) %s.", fired_lexical,
+                    )
+
+            if (
+                lexical_ri_gate
+                and "web_search" in tools
+                and self._research_loop_enabled()
+                and lexical_scores.get("research_intent", 0.0) >= _LEXICAL_FALLBACK_THRESHOLDS["research_intent"]
+            ):
+                tools[tools.index("web_search")] = "research"
+                logger.debug(
+                    "Planner: Priority 3 — upgraded web_search to research via "
+                    "lexical-fallback gate (research_intent=%.3f >= %.3f).",
+                    lexical_scores["research_intent"], _LEXICAL_FALLBACK_THRESHOLDS["research_intent"],
                 )
 
         raw = instruction if instruction is not None else lowered
@@ -2818,10 +3000,34 @@ class Planner:
                 priority       = 5,
             )
 
+        # Lexical/BM25 fallback (PLAN_semantic_gating_calibration.md §9) --
+        # only reached when this turn hit neither the static keyword list
+        # above nor a working cosine-based semantic gate. Real signal for
+        # turns whose phrasing doesn't match _EPISODIC_KEYWORDS literally
+        # but no embed_fn is available (or this gate specifically
+        # calibrated degenerate for the active model) -- otherwise this
+        # class of turn gets nothing at all.
+        lexical_score: float | None = None
+        if self._lexical_fallback_active("episodic_relevance"):
+            lexical_score = self._lexical_episodic_relevance(lowered)
+            if lexical_score >= _LEXICAL_FALLBACK_THRESHOLDS["episodic_relevance"]:
+                logger.debug(
+                    "Planner: Priority 5 — episodic lexical-fallback gate fired "
+                    "(bm25=%.3f >= %.3f) → fetch_episodic=True.",
+                    lexical_score, _LEXICAL_FALLBACK_THRESHOLDS["episodic_relevance"],
+                )
+                return RoutingPlan(
+                    agent          = "conversational_agent",
+                    fetch_episodic = True,
+                    fetch_rag      = False,
+                    priority       = 5,
+                )
+
         logger.debug(
             "Planner: Priority 5 — no episodic keyword matched; semantic "
-            "score=%s.",
+            "score=%s lexical score=%s.",
             f"{semantic_score:.3f}" if semantic_score is not None else "n/a",
+            f"{lexical_score:.3f}" if lexical_score is not None else "n/a",
         )
         return None
 

@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import bm25
 from .planner import (
     _ALL_SEARCH_NEGATIVE_FILTERS,
     _RESEARCH_NEGATIVE_FILTER,
@@ -148,11 +149,67 @@ def _score_pool(embed_fn: EmbedFn, phrases: list[str], template_vecs: list[list[
     return scores
 
 
+def _build_gate_phrase_pools() -> dict[str, tuple[list[str], list[str]]]:
+    """
+    (positive_phrases, negative_phrases) per gate, shared by both
+    calibrate_thresholds() (cosine, live per-model) and
+    calibrate_lexical_thresholds() (BM25, one-time offline) -- the pool
+    construction/filtering logic is intricate (negative-filter exclusion,
+    the explicit_search_action positive-pool proxy) and must never drift
+    between the two calibration paths.
+    """
+    lr_positive_phrases = [utt for _cat, utt in LR_CAT_C]
+    lr_negative_phrases = [utt for _cat, utt in LR_CAT_A] + [
+        utt for _cat, _domain, utt in LR_CAT_D
+        if not any(neg in utt.lower() for neg in _ALL_SEARCH_NEGATIVE_FILTERS)
+    ]
+    ri_positive_phrases = [
+        u for u in RI_CAT_T if not any(neg in u.lower() for neg in _RESEARCH_NEGATIVE_FILTER)
+    ]
+    ri_negative_phrases = [
+        u for u in (RI_CAT_L + [RI_CAT_L_PRICE_ADJACENT] + RI_CAT_K + RI_CAT_F + RI_CAT_E + RI_CAT_G)
+        if not any(neg in u.lower() for neg in _RESEARCH_NEGATIVE_FILTER)
+    ]
+    ep_positive_phrases = list(EP_POSITIVES) + list(EP_POSITIVES_LIVE)
+    ep_negative_phrases = list(EP_NEGATIVES)
+    return {
+        # explicit_search_action reuses lookup_request's pool -- see the
+        # comment in calibrate_thresholds() below for why.
+        "explicit_search_action": (lr_positive_phrases, lr_negative_phrases),
+        "lookup_request":         (lr_positive_phrases, lr_negative_phrases),
+        "research_intent":        (ri_positive_phrases, ri_negative_phrases),
+        "episodic_relevance":     (ep_positive_phrases, ep_negative_phrases),
+    }
+
+
+def _bm25_score_pool(phrases: list[str], template_phrases: tuple[str, ...]) -> list[float]:
+    """Best BM25 score of each phrase against `template_phrases` (the
+    gate's own trigger-phrase set, scored as one shared mini-corpus so
+    IDF/avg-doc-length are computed over a representative pool rather than
+    a single query-vs-one-document call)."""
+    if not template_phrases:
+        return []
+    documents = [(i, t) for i, t in enumerate(template_phrases)]
+    scores: list[float] = []
+    for phrase in phrases:
+        doc_scores = bm25.score_documents(phrase, documents)
+        scores.append(max(doc_scores.values()) if doc_scores else 0.0)
+    return scores
+
+
 def _youden_calibrate(
     positive_scores: list[float],
     negative_scores: list[float],
-    grid: list[float],
+    grid: list[float] | None = None,
 ) -> GateCalibration:
+    """
+    grid=None derives candidate thresholds directly from the observed
+    scores (every unique value in either pool) instead of a fixed range --
+    used for BM25 scores, which are unbounded/model-independent and have
+    no natural [0, 1]-style scale a fixed grid could assume. A `>=`
+    decision boundary only changes AT an observed score value, so this is
+    a complete search, not an approximation of one.
+    """
     if not positive_scores or not negative_scores:
         return GateCalibration(
             threshold=None,
@@ -168,6 +225,9 @@ def _youden_calibrate(
             positive_count=len(positive_scores),
             negative_count=len(negative_scores),
         )
+
+    if grid is None:
+        grid = sorted(set(positive_scores) | set(negative_scores))
 
     best_j = -1.0
     best_threshold: float | None = None
@@ -209,60 +269,85 @@ def calibrate_thresholds(embed_fn: EmbedFn) -> CalibrationResult:
     that gate (see _youden_calibrate) rather than crashing the caller
     (auto-calibration on model switch, or the reembed endpoint).
     """
-    esa_template_vecs = _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["explicit_search_action"])
-    lr_template_vecs = _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["lookup_request"])
-    ri_template_vecs = _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["research_intent"])
-    ep_template_vecs = _embed_template_group(embed_fn, _EPISODIC_RELEVANCE_TEMPLATES)
+    # explicit_search_action has no dedicated true-positive category in this
+    # battery -- the original hand-tuning diagnostics only ever scored
+    # LR_CAT_C against ESA as a regression/false-positive check (see
+    # planner.py's _SEMANTIC_GATE_THRESHOLDS comment: "Cat C max ESA score =
+    # 0.58, well under either threshold"), never as a required-to-fire
+    # positive set. Reusing lookup_request's pool here (see
+    # _build_gate_phrase_pools()) is the same framing, not a new assumption:
+    # if a given model doesn't treat "look up X" phrasing as ESA-positive,
+    # Youden's J will legitimately fail to clear _MIN_ACCEPTABLE_J and this
+    # gate falls back to a lower trust tier -- the honest outcome, not a
+    # guessed threshold.
+    template_vecs_by_gate = {
+        "explicit_search_action": _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["explicit_search_action"]),
+        "lookup_request":         _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["lookup_request"]),
+        "research_intent":        _embed_template_group(embed_fn, _SEARCH_INTENT_TEMPLATES["research_intent"]),
+        "episodic_relevance":     _embed_template_group(embed_fn, _EPISODIC_RELEVANCE_TEMPLATES),
+    }
+    grids_by_gate = {
+        "explicit_search_action": _LR_ESA_GRID,
+        "lookup_request":         _LR_ESA_GRID,
+        "research_intent":        _RI_EP_GRID,
+        "episodic_relevance":     _RI_EP_GRID,
+    }
 
     result = CalibrationResult()
-
-    # ---- lookup_request ----
-    lr_positive_phrases = [utt for _cat, utt in LR_CAT_C]
-    lr_negative_phrases = [utt for _cat, utt in LR_CAT_A] + [
-        utt for _cat, _domain, utt in LR_CAT_D
-        if not any(neg in utt.lower() for neg in _ALL_SEARCH_NEGATIVE_FILTERS)
-    ]
-    lr_pos_scores = _score_pool(embed_fn, lr_positive_phrases, lr_template_vecs)
-    lr_neg_scores = _score_pool(embed_fn, lr_negative_phrases, lr_template_vecs)
-    result.gates["lookup_request"] = _youden_calibrate(lr_pos_scores, lr_neg_scores, _LR_ESA_GRID)
-
-    # ---- explicit_search_action ----
-    # This battery has no dedicated true-positive category for ESA -- the
-    # original hand-tuning diagnostics only ever scored LR_CAT_C against ESA
-    # as a regression/false-positive check (see planner.py's
-    # _SEMANTIC_GATE_THRESHOLDS comment: "Cat C max ESA score = 0.58, well
-    # under either threshold"), never as a required-to-fire positive set.
-    # Reusing it here as ESA's positive proxy is the same framing, not a new
-    # assumption: if a given model doesn't treat "look up X" phrasing as
-    # ESA-positive, Youden's J will legitimately fail to clear
-    # _MIN_ACCEPTABLE_J and this gate falls back to a lower trust tier --
-    # the honest outcome, not a guessed threshold.
-    esa_pos_scores = _score_pool(embed_fn, lr_positive_phrases, esa_template_vecs)
-    esa_neg_scores = _score_pool(embed_fn, lr_negative_phrases, esa_template_vecs)
-    result.gates["explicit_search_action"] = _youden_calibrate(esa_pos_scores, esa_neg_scores, _LR_ESA_GRID)
-
-    # ---- research_intent ----
-    ri_positive_phrases = [
-        u for u in RI_CAT_T if not any(neg in u.lower() for neg in _RESEARCH_NEGATIVE_FILTER)
-    ]
-    ri_negative_phrases = [
-        u for u in (RI_CAT_L + [RI_CAT_L_PRICE_ADJACENT] + RI_CAT_K + RI_CAT_F + RI_CAT_E + RI_CAT_G)
-        if not any(neg in u.lower() for neg in _RESEARCH_NEGATIVE_FILTER)
-    ]
-    ri_pos_scores = _score_pool(embed_fn, ri_positive_phrases, ri_template_vecs)
-    ri_neg_scores = _score_pool(embed_fn, ri_negative_phrases, ri_template_vecs)
-    result.gates["research_intent"] = _youden_calibrate(ri_pos_scores, ri_neg_scores, _RI_EP_GRID)
-
-    # ---- episodic_relevance ----
-    ep_positive_phrases = list(EP_POSITIVES) + list(EP_POSITIVES_LIVE)
-    ep_negative_phrases = list(EP_NEGATIVES)
-    ep_pos_scores = _score_pool(embed_fn, ep_positive_phrases, ep_template_vecs)
-    ep_neg_scores = _score_pool(embed_fn, ep_negative_phrases, ep_template_vecs)
-    result.gates["episodic_relevance"] = _youden_calibrate(ep_pos_scores, ep_neg_scores, _RI_EP_GRID)
+    for name, (positive_phrases, negative_phrases) in _build_gate_phrase_pools().items():
+        template_vecs = template_vecs_by_gate[name]
+        pos_scores = _score_pool(embed_fn, positive_phrases, template_vecs)
+        neg_scores = _score_pool(embed_fn, negative_phrases, template_vecs)
+        result.gates[name] = _youden_calibrate(pos_scores, neg_scores, grids_by_gate[name])
 
     for name, gate in result.gates.items():
         logger.info(
             "threshold_calibration: gate=%s degenerate=%s threshold=%s "
+            "tpr=%s fpr=%s pos_n=%d neg_n=%d reason=%s",
+            name, gate.degenerate, gate.threshold,
+            gate.tpr_at_threshold, gate.fpr_at_threshold,
+            gate.positive_count, gate.negative_count, gate.reason,
+        )
+
+    return result
+
+
+def calibrate_lexical_thresholds() -> CalibrationResult:
+    """
+    One-time, offline calibration of the model-independent lexical/BM25
+    fallback tier (PLAN_semantic_gating_calibration.md §9). Unlike
+    calibrate_thresholds(), this needs no embed_fn -- BM25 scores the
+    fixture battery against each gate's own trigger-phrase set
+    (_SEARCH_INTENT_TEMPLATES / _EPISODIC_RELEVANCE_TEMPLATES) directly,
+    with no embedding model involved at all, so the result never needs
+    remeasuring per model the way calibrate_thresholds()'s does.
+
+    Not called at runtime or exposed via any endpoint -- run once via
+    diagnostics/calibrate_lexical_fallback_thresholds.py and the result is
+    hand-transcribed into planner.py's _LEXICAL_FALLBACK_THRESHOLDS
+    constant, the same convention _VALIDATED_MODEL_THRESHOLDS already
+    uses. Same Youden's J selection philosophy as calibrate_thresholds()
+    (one shared method across both tiers), but with grid=None -- BM25
+    scores are unbounded, so candidate thresholds are derived from the
+    observed score distribution rather than a fixed cosine-scale grid.
+    """
+    template_phrases_by_gate = {
+        "explicit_search_action": _SEARCH_INTENT_TEMPLATES["explicit_search_action"],
+        "lookup_request":         _SEARCH_INTENT_TEMPLATES["lookup_request"],
+        "research_intent":        _SEARCH_INTENT_TEMPLATES["research_intent"],
+        "episodic_relevance":     _EPISODIC_RELEVANCE_TEMPLATES,
+    }
+
+    result = CalibrationResult()
+    for name, (positive_phrases, negative_phrases) in _build_gate_phrase_pools().items():
+        template_phrases = template_phrases_by_gate[name]
+        pos_scores = _bm25_score_pool(positive_phrases, template_phrases)
+        neg_scores = _bm25_score_pool(negative_phrases, template_phrases)
+        result.gates[name] = _youden_calibrate(pos_scores, neg_scores, grid=None)
+
+    for name, gate in result.gates.items():
+        logger.info(
+            "threshold_calibration (lexical): gate=%s degenerate=%s threshold=%s "
             "tpr=%s fpr=%s pos_n=%d neg_n=%d reason=%s",
             name, gate.degenerate, gate.threshold,
             gate.tpr_at_threshold, gate.fpr_at_threshold,

@@ -1567,16 +1567,20 @@ class TestEpisodicSemanticRelevance:
     def test_disabled_when_semantic_gating_disabled(self):
         # Same per-gate tier resolution _semantic_search_intent() uses
         # (mismatched embedding model, no validated/calibrated entry) —
-        # must disable this gate too, since the "cosine thresholds aren't
-        # portable across models" rationale applies to this threshold
-        # exactly as much as P3's.
+        # the cosine-specific method must return None regardless, since the
+        # "cosine thresholds aren't portable across models" rationale
+        # applies to this threshold exactly as much as P3's. The gate
+        # itself now resolves to "lexical-fallback" rather than "disabled"
+        # (PLAN_semantic_gating_calibration.md §9) — real BM25 signal is
+        # available via _lexical_episodic_relevance() instead, exercised in
+        # TestCalibratedModelThresholds/lexical-fallback-specific tests.
         fixed_vec = _unit_vector(8)
         embed_fn = MagicMock(return_value=fixed_vec)
         p = Planner(
             runtime=make_runtime(), embed_fn=embed_fn,
             embedding_model_name="nomic-embed-text",
         )
-        assert p._gate_tier["episodic_relevance"] == "disabled"
+        assert p._gate_tier["episodic_relevance"] == "lexical-fallback"
         assert p._episodic_semantic_relevance("help me prepare for this") is None
 
     def test_priority5_fires_via_semantic_gate_with_no_keyword_match(self):
@@ -1647,11 +1651,19 @@ class TestTunedEmbeddingModelGuard:
         return Planner(runtime=make_runtime(), embed_fn=embed_fn, **kwargs)
 
     def test_mismatched_model_disables_semantic_gating(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="localist.planner"):
+        # "nomic-embed-text" (no ":latest") has no _VALIDATED_MODEL_
+        # THRESHOLDS/persisted-calibration entry, so cosine scoring is
+        # unavailable for every gate here -- but every gate now resolves to
+        # "lexical-fallback" rather than "disabled"
+        # (PLAN_semantic_gating_calibration.md §9), since
+        # _LEXICAL_FALLBACK_THRESHOLDS covers all four. The cosine-specific
+        # method still correctly returns None (no cosine threshold was
+        # ever assigned for a lexical-fallback gate).
+        with caplog.at_level(logging.INFO, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="nomic-embed-text")
 
-        assert all(tier == "disabled" for tier in p._gate_tier.values())
-        assert "does not match the model" in caplog.text
+        assert all(tier == "lexical-fallback" for tier in p._gate_tier.values())
+        assert "per-gate threshold resolution" in caplog.text
         assert "nomic-embed-text" in caplog.text
 
         result = p._semantic_search_intent("why don't you do a web search for APC")
@@ -1761,16 +1773,20 @@ class TestValidatedModelThresholds:
         ]
         assert "lookup_request" not in fired  # 0.61 < validated 0.62
 
-    def test_unvalidated_mismatched_model_still_fully_disabled(self, caplog):
-        """Regression guard: only models with an entry in
-        _VALIDATED_MODEL_THRESHOLDS get the escape hatch — any other
-        mismatched model keeps TestTunedEmbeddingModelGuard's original
-        fail-closed (fully disabled) behavior."""
-        with caplog.at_level(logging.WARNING, logger="localist.planner"):
+    def test_unvalidated_mismatched_model_falls_to_lexical_not_disabled(self, caplog):
+        """Regression guard, updated for PLAN_semantic_gating_calibration.md
+        §9: a mismatched model with no _VALIDATED_MODEL_THRESHOLDS entry no
+        longer lands on TestTunedEmbeddingModelGuard's original fail-closed
+        (fully disabled) behavior — it now gets the model-independent
+        lexical/BM25 fallback tier instead, since _LEXICAL_FALLBACK_
+        THRESHOLDS covers all four gates. True "disabled" is only reached
+        if a gate is somehow absent from that dict too (not exercised by
+        this fixture)."""
+        with caplog.at_level(logging.INFO, logger="localist.planner"):
             p = self._matching_vec_planner(embedding_model_name="some-other-model")
 
-        assert all(tier == "disabled" for tier in p._gate_tier.values())
-        assert "neither a validated nor an auto-calibrated threshold" in caplog.text
+        assert all(tier == "lexical-fallback" for tier in p._gate_tier.values())
+        assert "per-gate threshold resolution" in caplog.text
 
 
 class TestCalibratedModelThresholds:
@@ -1801,27 +1817,44 @@ class TestCalibratedModelThresholds:
         assert p._episodic_relevance_threshold == 0.60
         assert "per-gate threshold resolution" in caplog.text
 
-    def test_gates_absent_from_calibrated_thresholds_stay_disabled(self):
+    def test_gates_absent_from_calibrated_thresholds_fall_to_lexical(self):
         # A partial calibration result (e.g. explicit_search_action and
         # lookup_request calibrated as degenerate — see
         # threshold_calibration._MIN_ACCEPTABLE_J) must not accidentally
-        # enable those gates; only the gates actually present resolve.
+        # enable those gates via the auto-calibrated tier; only the gates
+        # actually present resolve to "auto-calibrated". The absent ones
+        # fall to "lexical-fallback" (PLAN_semantic_gating_calibration.md
+        # §9), not "disabled" — _LEXICAL_FALLBACK_THRESHOLDS covers all
+        # four gates.
         p = self._matching_vec_planner(
             embedding_model_name="mystery-model:latest",
             calibrated_thresholds={"research_intent": 0.55},
         )
-        assert p._gate_tier["explicit_search_action"] == "disabled"
-        assert p._gate_tier["lookup_request"] == "disabled"
-        assert p._gate_tier["episodic_relevance"] == "disabled"
+        assert p._gate_tier["explicit_search_action"] == "lexical-fallback"
+        assert p._gate_tier["lookup_request"] == "lexical-fallback"
+        assert p._gate_tier["episodic_relevance"] == "lexical-fallback"
+        assert p._gate_tier["research_intent"] == "auto-calibrated"
+        # Cosine-scale thresholds must never be populated for a
+        # lexical-fallback gate -- its real threshold lives in
+        # _LEXICAL_FALLBACK_THRESHOLDS on a completely different scale.
+        assert "explicit_search_action" not in p._semantic_gate_thresholds
+        assert "lookup_request" not in p._semantic_gate_thresholds
         assert p._semantic_gate_thresholds == {}
         assert p._episodic_relevance_threshold is None
 
-    def test_both_calibrated_and_validated_absent_still_fully_disabled(self):
+    def test_both_calibrated_and_validated_absent_falls_to_lexical(self):
+        # No calibrated_thresholds at all -- every gate falls straight to
+        # the model-independent lexical-fallback tier (PLAN_semantic_
+        # gating_calibration.md §9), not "disabled": _LEXICAL_FALLBACK_
+        # THRESHOLDS doesn't depend on calibrated_thresholds being present.
         p = self._matching_vec_planner(
             embedding_model_name="mystery-model:latest",
             calibrated_thresholds=None,
         )
-        assert all(tier == "disabled" for tier in p._gate_tier.values())
+        assert all(tier == "lexical-fallback" for tier in p._gate_tier.values())
+        assert p._semantic_gate_thresholds == {}
+        assert p._research_intent_threshold is None
+        assert p._episodic_relevance_threshold is None
 
     def test_validated_dict_takes_priority_over_calibrated_for_same_gate(self):
         # nomic-embed-text:latest has a real _VALIDATED_MODEL_THRESHOLDS
@@ -1850,6 +1883,88 @@ class TestCalibratedModelThresholds:
         )
         assert all(tier == "tuned" for tier in p._gate_tier.values())
         assert p._semantic_gate_thresholds["lookup_request"] == _SEMANTIC_GATE_THRESHOLDS["lookup_request"]
+
+
+class TestLexicalFallbackTier:
+    """
+    Functional tests for the model-independent lexical/BM25 fallback tier
+    (PLAN_semantic_gating_calibration.md §9) — a model with no validated or
+    persisted-calibration entry for a gate should still route correctly via
+    _priority3_tool()/_priority5_episodic(), not silently produce nothing.
+
+    Uses a real embed_fn (mocked, returns a fixed vector — its content is
+    irrelevant here since the lexical path never calls it) with a model
+    name that has neither a _VALIDATED_MODEL_THRESHOLDS nor a calibrated_
+    thresholds entry, so every gate resolves to "lexical-fallback" (see
+    TestCalibratedModelThresholds.test_both_calibrated_and_validated_
+    absent_falls_to_lexical). Deliberately scoped to a real, named,
+    non-tuned model — NOT true keyword-only (embed_fn=None) — per
+    Planner._lexical_fallback_active()'s documented scope reduction.
+    """
+
+    def _lexical_planner(self) -> "Planner":
+        fixed_vec = _unit_vector(8)
+        embed_fn = MagicMock(return_value=fixed_vec)
+        p = Planner(
+            runtime=make_runtime(), embed_fn=embed_fn,
+            embedding_model_name="mystery-model:latest",
+        )
+        assert all(tier == "lexical-fallback" for tier in p._gate_tier.values())
+        return p
+
+    def test_priority3_fires_web_search_via_lexical_fallback(self):
+        # A real lookup_request positive fixture utterance
+        # (threshold_calibration_fixtures.LR_CAT_C) — cosine scoring is
+        # unavailable for this model (no validated/calibrated entry), so
+        # only the lexical/BM25 path can catch it.
+        p = self._lexical_planner()
+        plan = p.route(
+            "Can you look up Apple's price hike for the MacBook Neo and iPad?",
+            context={},
+        )
+        assert "web_search" in plan.tools_to_call
+
+    def test_priority3_does_not_fire_for_an_unrelated_instruction(self):
+        p = self._lexical_planner()
+        plan = p.route("Tell me a joke.", context={})
+        assert "web_search" not in plan.tools_to_call
+
+    def test_priority5_fires_fetch_episodic_via_lexical_fallback_no_keyword(self):
+        # The live-motivating utterance for the cosine episodic-relevance
+        # gate (planner.py's module comment above _EPISODIC_RELEVANCE_
+        # TEMPLATES) — contains no _EPISODIC_KEYWORDS match, so only the
+        # lexical path can catch it here.
+        p = self._lexical_planner()
+        instruction = "Help me prepare for the upcoming Claude Impact Lab on August 6th."
+        assert not any(
+            kw in instruction.lower()
+            for kw in ["preference", "remember", "decision", "correction", "workflow",
+                       "last time", "previously", "before", "my project", "my setup",
+                       "my environment", "my name", "who am i"]
+        )
+        plan = p._priority5_episodic(instruction)
+        assert plan is not None
+        assert plan.fetch_episodic is True
+
+    def test_priority5_returns_none_for_unrelated_instruction_no_keyword(self):
+        p = self._lexical_planner()
+        plan = p._priority5_episodic("What is the capital of France?")
+        assert plan is None
+
+    def test_lexical_fallback_not_active_for_true_keyword_only_this_pass(self):
+        # Documents the deliberate scope reduction in
+        # Planner._lexical_fallback_active(): true keyword-only (embed_fn
+        # is None) does NOT get lexical fallback in this pass, even though
+        # _LEXICAL_FALLBACK_THRESHOLDS covers every gate — see that
+        # method's docstring for why (a very large pre-existing test
+        # surface constructs a keyword-only Planner to test unrelated
+        # literal-keyword logic in isolation).
+        from localist.planner import _GATE_NAMES
+
+        p = Planner(runtime=make_runtime())
+        assert p._embed_fn is None
+        for name in _GATE_NAMES:
+            assert p._lexical_fallback_active(name) is False
 
 
 class TestSemanticSearchIntentDiag2:

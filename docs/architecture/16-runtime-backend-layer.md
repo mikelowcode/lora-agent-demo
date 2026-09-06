@@ -1191,18 +1191,47 @@ battery/methodology improved, or a model was re-pulled under the same tag with d
 
 **`Planner`'s tiered resolution, extended.** Previously two-tier (tuned model's own constants →
 `_VALIDATED_MODEL_THRESHOLDS` → disabled, all-or-nothing per model). Now resolved **per gate**,
-independently, across four tiers: tuned → validated (highest trust, hand-reviewed) →
-**auto-calibrated (new — persisted, `Planner`'s new `calibrated_thresholds` constructor param,
+independently, across five tiers: tuned → validated (highest trust, hand-reviewed) →
+**auto-calibrated (persisted, `Planner`'s new `calibrated_thresholds` constructor param,
 threaded through `ControllerAgent` from `main.py`'s `_build_controller()` via a new
 `_derive_calibrated_thresholds()` helper, mirroring `_derive_active_embedding_model_name()`)** →
-disabled. A fifth, model-independent lexical/BM25 tier is designed
-(`PLAN_semantic_gating_calibration.md` §9 — Youden's J applied to BM25 scores instead of cosine,
-calibrated once offline and checked into source since BM25 doesn't shift per embedding model,
-covering both the search-intent and episodic-relevance gates) but **not yet built** — see Open
-items. The tier-resolution logic itself was extracted into a standalone, pure
+**lexical-fallback (built same day, `PLAN_semantic_gating_calibration.md` §9 —
+`planner._LEXICAL_FALLBACK_THRESHOLDS`, Youden's J applied to `bm25.score_documents()` scores
+instead of cosine, calibrated ONCE offline via `diagnostics/calibrate_lexical_fallback_thresholds.py`/
+`threshold_calibration.calibrate_lexical_thresholds()` and checked into source since BM25 doesn't
+shift per embedding model — all four gates calibrated cleanly)** → disabled. The tier-resolution
+logic itself was extracted into a standalone, pure
 `planner.resolve_gate_tiers(embedding_model_name, calibrated_thresholds) -> dict[str, str]`
 function so `Planner.__init__` and `GET /health` (below) can never disagree about which tier is
 active for a given gate.
+
+**Lexical-fallback scoring — additive, not a rewrite.** `Planner._lexical_search_intent_scores()`
+(Priority 3) / `_lexical_episodic_relevance()` (Priority 5) score `lowered` via BM25 against the
+same `_SEARCH_INTENT_TEMPLATES`/`_EPISODIC_RELEVANCE_TEMPLATES` trigger phrases cosine similarity
+uses, computed only when `Planner._lexical_fallback_active(gate_name)` is true, and wired into
+`_priority3_tool()`/`_priority5_episodic()` as new code additive to the existing cosine logic —
+deliberately not merged into `_semantic_search_intent()`/`_episodic_semantic_relevance()` itself,
+since a BM25 score and a cosine score are on two entirely incomparable scales (mixing them into one
+dict risks silently comparing a BM25 threshold like `2.83` against a cosine score that can never
+exceed `1.0`). Priority 3's lexical path reuses the cosine path's negative-filter collision list
+(`_ALL_SEARCH_NEGATIVE_FILTERS`) as a conservative pre-filter, but without that path's model-based
+tie-break (`_resolve_negative_filter_conflict`) — a known collision phrase just suppresses the
+lexical signal outright, matching this file's general fail-closed posture rather than adding a
+second inference-based escalation path.
+
+**Scope reduction, decided during implementation.** `_lexical_fallback_active(name)` only returns
+true for a real, *named*, non-tuned embedding model with no validated/auto-calibrated entry for
+that specific gate — **not** for true keyword-only (`embedding_model_name is None`, `embed_fn is
+None`), even though `_LEXICAL_FALLBACK_THRESHOLDS` covers every gate. `resolve_gate_tiers(None, …)`
+reports `"tuned"` for labeling purposes only (matching its pre-existing behavior, since None only
+ever occurs in production when `embed_fn` is also None and no cosine scoring can run regardless of
+the label) — the actual runtime gate checks `self._embed_fn is None` directly and stops there.
+Extending lexical fallback to true keyword-only mode was attempted first and reverted: a very large
+pre-existing test surface (P3's github/hacker-news/url-fetch guard tests, the explicit-date signal
+tests, and others) constructs a keyword-only `Planner` specifically to test unrelated
+literal-keyword logic in isolation with zero additional signal expected, and the wider trigger
+condition changed routing outcomes across dozens of those unrelated tests. Tracked as a real,
+undone follow-up — see Open items — not silently dropped.
 
 **Two triggers, one shared code path (`main.py`'s `_calibrate_and_persist()`).** Automatic,
 zero-extra-clicks first-time calibration on `POST /settings/embedding-model` — runs only when the
@@ -1226,27 +1255,36 @@ breaking down each gate individually, and both the switch/reembed confirmation m
 a `"Recalibrated semantic gating for {model} (ESA=…, LR=…, RI=…, episodic=…)."`-style summary when
 calibration ran.
 
-**Test suite:** `test_threshold_calibration.py` (new, 12 tests — Youden's J selection math,
-the degenerate floor, empty-pool handling, and end-to-end `calibrate_thresholds()` behavior
-including embed_fn-failure resilience and non-unit-length-vector consistency); `TestSchemaV17Migration`
-added to `test_retention_sweep.py` (3 tests, mirroring `TestSchemaV16Migration`'s real-on-disk-DB
-convention); `TestCalibratedModelThresholds` added to `test_planner_phase3.py` (6 tests covering the
-new tier's priority, partial-calibration handling, and both-tiers-absent fallback);
+**Test suite:** `test_threshold_calibration.py` (15 tests — Youden's J selection math, the
+degenerate floor, empty-pool handling, end-to-end `calibrate_thresholds()` behavior including
+embed_fn-failure resilience and non-unit-length-vector consistency, plus
+`TestCalibrateLexicalThresholds`'s 3 tests covering the real, non-stubbed BM25 calibration run and a
+drift tripwire against `planner._LEXICAL_FALLBACK_THRESHOLDS`); `TestSchemaV17Migration` added to
+`test_retention_sweep.py` (3 tests, mirroring `TestSchemaV16Migration`'s real-on-disk-DB
+convention); `TestCalibratedModelThresholds` (updated for the new tier's presence) and the new
+`TestLexicalFallbackTier` (5 tests — real `_priority3_tool()`/`_priority5_episodic()` routing via
+BM25 for a positive/negative fixture utterance each, plus a regression guard documenting the
+true-keyword-only scope reduction) added to `test_planner_phase3.py`;
 `TestAutomaticFirstTimeCalibration`/`TestReembedRecalibration` added to
 `test_main_embedding_model_switch.py` (6 tests covering both triggers' endpoint wiring);
-`TestHealthGateTiers` (new file, 5 tests) covering `GET /health`'s new fields. Full suite 1576 → 1602
-passed. A real bug was caught by this test-writing pass and fixed before landing:
+`TestHealthGateTiers` (5 tests, updated for the new tier) covering `GET /health`'s new fields. Full
+suite 1576 → 1610 passed. Two real bugs were caught by this work and fixed before landing: (1)
 `_youden_calibrate()`'s "poor separation" branch was returning a real numeric `threshold` even when
 `degenerate=True` (only the separate "empty pool" branch honored the module's own documented
 promise that `threshold is None` whenever `degenerate` is `True`) — now consistent across both
-branches, so a caller checking `threshold is not None` alone is always safe.
+branches; (2) the lexical tier's first implementation made `embedding_model_name is None` resolve
+to per-gate lexical-fallback/disabled instead of `"tuned"`, which broke ~28 pre-existing tests that
+construct a keyword-only `Planner` as a test shortcut — reverted to the scope-reduced design
+described above before landing.
 
 **Open items:**
-- The lexical/BM25 fifth tier (`PLAN_semantic_gating_calibration.md` §9) is designed but not built —
-  today, a model that calibrates fully degenerate (or a true zero-config keyword-only install with
-  no embedding source at all) still lands on fully-disabled semantic gating for the affected gates,
-  same as before this feature. Priority 5's existing static `_EPISODIC_KEYWORDS` bypass (unrelated to
-  and unaffected by this work) partially covers the keyword-only case for episodic relevance only.
+- The true-keyword-only half of `PLAN_semantic_gating_calibration.md` §9's motivation
+  (`embedding_model_name`/`embed_fn` both `None`) is explicitly NOT covered by the lexical-fallback
+  tier — see the Scope reduction paragraph above. Priority 5's existing static `_EPISODIC_KEYWORDS`
+  bypass (unrelated to and unaffected by this work) partially covers that case for episodic
+  relevance only; Priority 3 search-intent gets nothing extra for a genuinely embedding-less
+  session. A real follow-up, not a rejected idea — would need the affected guard/signal tests'
+  expectations addressed deliberately alongside it, not as a side effect.
 - No UI surface yet for *triggering* recalibration independent of a corpus re-embed (e.g. if only
   the calibration methodology changes, not the corpus) — bundled into "Re-embed Corpus Now" per an
   explicit decision that a separate action wasn't worth the added UI surface, but revisit if that

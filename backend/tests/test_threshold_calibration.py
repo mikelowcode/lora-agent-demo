@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import math
 
-from localist.planner import _SEARCH_INTENT_TEMPLATES, _EPISODIC_RELEVANCE_TEMPLATES
+from localist.planner import _SEARCH_INTENT_TEMPLATES, _EPISODIC_RELEVANCE_TEMPLATES, _GATE_NAMES
 from localist.threshold_calibration import (
     calibrate_thresholds,
+    calibrate_lexical_thresholds,
     _youden_calibrate,
     _MIN_ACCEPTABLE_J,
     GateCalibration,
@@ -237,3 +238,49 @@ class TestCalibrateThresholdsIntegration:
         fixed_vec = _unit_vector(8)
         result = calibrate_thresholds(lambda text: fixed_vec)
         assert all(name not in result.thresholds for name in result.gates)
+
+
+class TestCalibrateLexicalThresholds:
+    """
+    calibrate_lexical_thresholds() (PLAN_semantic_gating_calibration.md
+    §9) — the one-time, offline BM25 calibration backing planner.py's
+    _LEXICAL_FALLBACK_THRESHOLDS constant. No embed_fn involved at all;
+    scores the real fixture battery against each gate's own trigger-phrase
+    templates via bm25.score_documents().
+    """
+
+    def test_all_four_gates_calibrate_cleanly_against_the_real_battery(self):
+        # This is the actual, real (non-stubbed) calibration run whose
+        # output was hand-transcribed into planner.py's
+        # _LEXICAL_FALLBACK_THRESHOLDS — a regression guard: if the fixture
+        # battery or bm25.py's scoring ever changes such that one of these
+        # four gates stops calibrating cleanly, that constant is silently
+        # stale and needs re-deriving via
+        # diagnostics/calibrate_lexical_fallback_thresholds.py.
+        result = calibrate_lexical_thresholds()
+
+        assert set(result.gates) == set(_GATE_NAMES)
+        assert result.all_degenerate is False
+        for name in _GATE_NAMES:
+            assert result.gates[name].degenerate is False, result.gates[name]
+            assert result.gates[name].threshold is not None
+        assert set(result.thresholds) == set(_GATE_NAMES)
+
+    def test_matches_planners_checked_in_constant(self):
+        # planner._LEXICAL_FALLBACK_THRESHOLDS was hand-transcribed from
+        # this exact function's output (diagnostics/calibrate_lexical_
+        # fallback_thresholds.py) — this is the tripwire that catches drift
+        # if the fixtures/scoring change but the constant isn't re-derived.
+        from localist.planner import _LEXICAL_FALLBACK_THRESHOLDS
+
+        result = calibrate_lexical_thresholds()
+        assert result.thresholds == _LEXICAL_FALLBACK_THRESHOLDS
+
+    def test_scores_are_bm25_scale_not_cosine_scale(self):
+        # A sanity guard against ever accidentally wiring cosine-scale
+        # grids/assumptions into this path -- BM25 scores are unbounded,
+        # so real thresholds here should NOT sit in the [0, 1] cosine
+        # range (see bm25.py's module docstring).
+        result = calibrate_lexical_thresholds()
+        for name, threshold in result.thresholds.items():
+            assert threshold > 1.0, f"{name} threshold {threshold} looks cosine-scale, not BM25-scale"

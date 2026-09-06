@@ -238,18 +238,20 @@
   // single all-or-nothing verdict) — the badge shows the WORST tier across
   // all four gates, with a tooltip listing the per-gate breakdown.
   const GATE_TIER_RANK: Record<string, number> = {
-    disabled: 0, 'auto-calibrated': 1, validated: 2, tuned: 3
+    disabled: 0, 'lexical-fallback': 1, 'auto-calibrated': 2, validated: 3, tuned: 4
   };
   const GATE_TIER_LABEL: Record<string, string> = {
     tuned: 'hand-validated',
     validated: 'hand-validated',
     'auto-calibrated': 'auto-calibrated',
+    'lexical-fallback': 'keyword fallback',
     disabled: 'gating disabled'
   };
   const GATE_TIER_BADGE_CLASS: Record<string, string> = {
     tuned: 'badge-success',
     validated: 'badge-success',
     'auto-calibrated': 'badge-warning',
+    'lexical-fallback': 'badge-accent',
     disabled: 'badge-muted'
   };
 
